@@ -1,6 +1,6 @@
 # ADR: Direct DALGO sources for investigation evidence
 
-Status: implementation verified locally; OVDB mount landed, adapter release pending, 2026-10-19.
+Status: implemented, locally verified and merged across OVDB, adapter, demo and DataTug, 2026-10-19.
 
 ## Decision
 
@@ -52,8 +52,12 @@ owner approval is required before release.
 - [ ] Hosted per-user Google Cloud connection authorization.
 - [x] Independent protocol, security, demo and UX review; initialization DDL,
   projection, byte-budget and applied-query identity findings repaired and
-  regression-tested. The standalone dependency pin is tracked for release.
-- [ ] Adapter, demo and DataTug merge, push and worktree cleanup receipts.
+  regression-tested. The standalone dependency pin was verified and merged.
+- [x] Adapter PR #1 merged at `6973cafaf24fc18da4c8a7172c517017ccc9cf18`;
+  demo PR #52 merged at `5d7e9ca39f4ef70b7345b5041a0ef040e133dcf5`.
+- [x] DataTug PR #393 merged at `f9f25caf2b3a57e05571946a0a5e1dadf59c4061`;
+  its exact head cleared the CI gate with 13/13 checks settled. WB removed the
+  remote branch and cleaned the worktree.
 
 The existing Context Bag is scoped to an agent, project, environment and
 security context. This local public demo uses a shareable `order=11039` URL
