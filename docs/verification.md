@@ -1,6 +1,7 @@
 # Verification record (2026-10-19)
 
-The commands below ran in the `dalgo2logs-investigation` WB worktrees. The
+Most commands below ran in the `dalgo2logs-investigation` WB worktrees; the
+focused DataTug browser E2E ran in `dalgo2logs-northwind-e2e`. The
 adapter initially used a temporary Go workspace while its generic OVDB mount
 was under review. OVDB PR #88 then landed at merge commit
 `64e07ec41c4b776bddc0501c042298fb0eb31882`; the adapter pins its Go
@@ -18,6 +19,8 @@ pseudo-version and passed a standalone `GOWORK=off` suite.
 | DataTug app | `NX_DAEMON=false NX_ISOLATE_PLUGINS=false node_modules/.bin/nx build datatug-app --configuration=development --excludeTaskDependencies --skip-nx-cache` | Passed after the final UI fixes; unrelated existing Angular optional-chain and Sass import warnings. The full dependency build was blocked locally by an unrelated release-asset HTTP 404. |
 | DataTug lint | `NX_DAEMON=false NX_ISOLATE_PLUGINS=false node_modules/.bin/nx lint datatug-main --skip-nx-cache`; `NX_DAEMON=false NX_ISOLATE_PLUGINS=false node_modules/.bin/nx lint datatug-app --skip-nx-cache` | Both passed. |
 | DataTug PR #393 CI | Exact head `745aeb4cdfebbacb777bc277e76f0afac2f6455d` | WB observed 13/13 settled checks, including successful build, test and deploy-gate; the PR merged to main at `f9f25caf2b3a57e05571946a0a5e1dadf59c4061`. Scheduled E2E jobs were skipped by workflow policy, so CI did not replace the manually verified browser journey. |
+| Real-source DataTug browser E2E | `DATATUG_DEMO_PROJECT_DIR=/Users/alex/projects/datatug/datatug-demo-project DALGO2LOGS_REPO=/Users/alex/projects/dal-go/dalgo2logs DATATUG_LOGS_E2E_PORT=4342 NX_DAEMON=false NX_ISOLATE_PLUGINS=false node_modules/.bin/nx run datatug-app:e2e -- --config=apps/datatug-app/playwright.logs.config.ts --forbid-only` from the DataTug app checkout, after the documented development build | Passed 2/2 on the reviewed PR #395 head. The test starts the real direct OVDB adapter against synthetic files, exercises six events, source/raw and multiline evidence, severity and identifier filtering, an empty result, the order-record URL, and browser Back. It creates a temporary CORS config and stops its owned adapter process. Default Playwright discovery excludes this opt-in fixture-dependent suite (155 tests in 42 files listed without external checkouts). |
+| DataTug PR #395 CI and landing | Head `dad03393b455b2b1317514e4226c6193b9502204`; `wb pr land datatug/datatug-apps#395` | WB reported 14/14 settled checks and successful landing; GitHub independently reported `MERGED` at `6947104607ffa8447c88a020897755a3388700a7`. Build, test and deploy-gate passed; scheduled E2E jobs were skipped by workflow policy. The branch and WB worktree were cleaned. |
 | Spec | `specscore spec lint --caller codex` | Passed: 0 violations after the review fixes. |
 | Browser journey | Built DataTug app at `127.0.0.1:4200`, direct OVDB file server at `127.0.0.1:6832` | Observed order 11039 and `ShippedDate=NULL`, six linked events, raw WARN evidence, severity narrowing and return to the selected order; changing the order to 11040 updated the URL and yielded one unrelated event. The 375px filter and expanded timeline were manually observed without horizontal overflow; durable screenshots cover the desktop journey in the demo project's `fixtures/logs` folder. |
 
@@ -29,3 +32,8 @@ standalone test now address that release blocker. Live Google Cloud Logging acce
 not exercised; fake-reader tests verify pushdown, bounds, cancellation and
 read-only behavior. The local Cloud path is a single-owner connection and is
 not a hosted per-user account integration.
+
+The focused browser E2E asserts the order record route and return navigation,
+but does not verify completion of the pinned browser SQLite download or the
+selected record's fields; those were observed in the separate manual browser journey.
+It also does not create a persisted Detective case.
