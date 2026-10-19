@@ -139,7 +139,10 @@ func TestCloudQueryReadsCurrentEntriesWithoutCredentialOrStorage(t *testing.T) {
 
 func TestCloudQueryBoundsCompleteMappedRows(t *testing.T) {
 	entry := &logging.Entry{Timestamp: time.Date(2026, 10, 19, 3, 30, 0, 0, time.UTC), Payload: map[string]any{"message": strings.Repeat("x", 400_000)}}
-	db := &database{cfg: Config{Collection: "entries", ProjectID: "owned-project", MaxResults: 30, MaxWindow: time.Hour, MaxQueryDuration: time.Second}, entries: func(context.Context, string, int) entryReader {
+	// This test intentionally serializes many large records to exercise the byte
+	// budget. Give that work ample time under race instrumentation so the query
+	// timeout cannot mask the byte-limit assertion.
+	db := &database{cfg: Config{Collection: "entries", ProjectID: "owned-project", MaxResults: 30, MaxWindow: time.Hour, MaxQueryDuration: 5 * time.Minute}, entries: func(context.Context, string, int) entryReader {
 		return &fakeReader{entries: []*logging.Entry{entry}}
 	}}
 	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), boundedQuery()); !errors.Is(err, dal.ErrNotSupported) {
