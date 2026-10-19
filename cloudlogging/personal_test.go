@@ -184,6 +184,65 @@ func TestPersonalPaginationIsBoundedAndCancellationPropagates(t *testing.T) {
 	}
 }
 
+func TestPersonalRawEvidenceIncludesRESTOnlyFields(t *testing.T) {
+	const response = `{"entries":[{"textPayload":"same mapped payload","split":{"uid":"split-1","index":0,"totalSplits":2},"receiveTimestamp":"2026-10-19T03:31:00Z","metadata":{"userLabels":{"evidence":"metadata"}},"errorGroups":[{"id":"group-1"}],"apphub":{"application":{"id":"app-1"}},"apphubSource":{"application":{"id":"source-1"}},"apphubDestination":{"application":{"id":"destination-1"}},"otel":{"resource":{"attributes":{"service.name":"orders"}}}}]}`
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return apiResponse(request, response), nil
+	})}
+	service, err := loggingv2.NewService(context.Background(), option.WithHTTPClient(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &personalEntryReader{
+		ctx: context.Background(),
+		list: func(request *loggingv2.ListLogEntriesRequest) *loggingv2.EntriesListCall {
+			return service.Entries.List(request)
+		},
+		request: &loggingv2.ListLogEntriesRequest{ResourceNames: []string{"projects/demo-project/locations/global/buckets/_Default/views/_AllLogs"}, PageSize: 1},
+	}
+	entry, source, err := reader.NextWithSource()
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := mapEntryWithSource(entry, "demo-project", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(row["raw"].(string)), &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"split", "receiveTimestamp", "metadata", "errorGroups", "apphub", "apphubSource", "apphubDestination", "otel"} {
+		if _, ok := raw[field]; !ok {
+			t.Errorf("raw evidence omitted REST field %q: %s", field, row["raw"])
+		}
+	}
+	if got := raw["receiveTimestamp"]; got != "2026-10-19T03:31:00Z" {
+		t.Errorf("receiveTimestamp = %#v", got)
+	}
+
+	// These REST-only fields do not map to logging.Entry. They must still
+	// contribute to source identity, even when the user-facing mapped row is
+	// otherwise identical.
+	alteredSourceFields := map[string]any{}
+	if err := json.Unmarshal(source, &alteredSourceFields); err != nil {
+		t.Fatal(err)
+	}
+	alteredSplit := alteredSourceFields["split"].(map[string]any)
+	alteredSplit["uid"] = "split-2"
+	alteredSource, err := json.Marshal(alteredSourceFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row2, err := mapEntryWithSource(entry, "demo-project", alteredSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row["source_ref"] == row2["source_ref"] {
+		t.Fatal("REST-only evidence change did not change source_ref")
+	}
+}
+
 func TestPersonalQueryCancellationStopsTokenRefresh(t *testing.T) {
 	started := make(chan struct{})
 	provider := tokenProviderFunc(func(ctx context.Context) (*auth.Token, error) {

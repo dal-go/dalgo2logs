@@ -100,23 +100,38 @@ type personalEntryReader struct {
 }
 
 func (r *personalEntryReader) Next() (*logging.Entry, error) {
+	entry, _, err := r.NextWithSource()
+	return entry, err
+}
+
+func (r *personalEntryReader) NextWithSource() (*logging.Entry, []byte, error) {
 	for {
 		if r.entryIndex < len(r.entries) {
 			entry := r.entries[r.entryIndex]
 			r.entryIndex++
-			return convertPersonalEntry(entry)
+			mapped, err := convertPersonalEntry(entry)
+			if err != nil {
+				return nil, nil, err
+			}
+			// Re-encode the decoded API object to retain its complete canonical
+			// REST shape, including fields absent from logging.Entry.
+			source, err := json.Marshal(entry)
+			if err != nil {
+				return nil, nil, errors.New("cloudlogging: REST log entry cannot be encoded")
+			}
+			return mapped, source, nil
 		}
 		if r.done {
-			return nil, iterator.Done
+			return nil, nil, iterator.Done
 		}
 		if r.pages >= maxPersonalPages {
-			return nil, errors.New("cloudlogging: personal log query exceeded page budget")
+			return nil, nil, errors.New("cloudlogging: personal log query exceeded page budget")
 		}
 		request := *r.request
 		request.PageToken = r.pageToken
 		response, err := r.list(&request).Context(r.ctx).Do()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		r.pages++
 		r.pageToken = response.NextPageToken
@@ -127,7 +142,7 @@ func (r *personalEntryReader) Next() (*logging.Entry, error) {
 		}
 		// A successful empty page with a continuation token is not exhaustion.
 		if len(r.entries) == 0 && r.done {
-			return nil, iterator.Done
+			return nil, nil, iterator.Done
 		}
 	}
 }

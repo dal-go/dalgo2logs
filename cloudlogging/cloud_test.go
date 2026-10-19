@@ -206,3 +206,44 @@ func TestCloudQueryHonorsMappedAliasPrecedenceBeforeLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestCloudLoggingEqualityUsesUnicodeNFKCCaseFold(t *testing.T) {
+	for _, tc := range []struct{ actual, expected string }{
+		{actual: "Ａ-11039", expected: "a-11039"},      // full-width compatibility form
+		{actual: "caf\u00e9", expected: "cafe\u0301"}, // composed/decomposed accent
+		{actual: "Straße", expected: "STRASSE"},
+	} {
+		if !cloudLoggingEqual(tc.actual, tc.expected) {
+			t.Errorf("cloudLoggingEqual(%q, %q) = false", tc.actual, tc.expected)
+		}
+	}
+	if cloudLoggingEqual("order-11039", "order-11040") {
+		t.Fatal("different identifiers compare equal")
+	}
+}
+
+func TestCloudQueryKeepsProviderNFKCCaseFoldMatch(t *testing.T) {
+	entry := &logging.Entry{
+		Timestamp: time.Date(2026, 10, 19, 3, 30, 0, 0, time.UTC),
+		Payload:   map[string]any{"message": "compatibility-form identifier", "order_id": "Ａ-11039"},
+	}
+	db := &database{cfg: Config{Collection: "entries", ProjectID: "owned-project", MaxResults: 20, MaxWindow: time.Hour, MaxQueryDuration: time.Second}, entries: func(context.Context, string, int) entryReader {
+		return &fakeReader{entries: []*logging.Entry{entry}}
+	}}
+	query := dal.From(dal.NewRootCollectionRef("entries", "")).NewQuery().
+		WhereField("timestamp", dal.GreaterOrEqual, "2026-10-19T03:00:00Z").
+		WhereField("timestamp", dal.LessOrEqual, "2026-10-19T04:00:00Z").
+		WhereField("order_id", dal.Equal, "a-11039").Limit(1).SelectIntoRecord(nil)
+	reader, err := db.ExecuteQueryToRecordsReader(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	row, err := reader.Next()
+	if err != nil {
+		t.Fatalf("provider NFKC case-fold match was dropped: %v", err)
+	}
+	if got := row.Data().(map[string]any)["order_id"]; got != "Ａ-11039" {
+		t.Fatalf("mapped order_id = %#v", got)
+	}
+}

@@ -22,6 +22,8 @@ import (
 	"github.com/dal-go/dalgo/dbschema"
 	"github.com/dal-go/dalgo/recordset"
 	"github.com/dal-go/record"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
 	"google.golang.org/api/iterator"
 	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 )
@@ -48,6 +50,12 @@ type database struct {
 
 type entryReader interface {
 	Next() (*logging.Entry, error)
+}
+
+// sourceEntryReader carries provider fields that the Cloud Logging SDK does not
+// model. They remain part of the canonical raw evidence and source identity.
+type sourceEntryReader interface {
+	NextWithSource() (*logging.Entry, []byte, error)
 }
 
 type cloudHandle struct {
@@ -269,14 +277,21 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		e, err := it.Next()
+		var e *logging.Entry
+		var source []byte
+		var err error
+		if sourced, ok := it.(sourceEntryReader); ok {
+			e, source, err = sourced.NextWithSource()
+		} else {
+			e, err = it.Next()
+		}
 		if err == iterator.Done {
 			break
 		}
 		if err != nil {
 			return nil, fmt.Errorf("cloudlogging: list entries failed: %w", err)
 		}
-		row, err := mapEntry(e, d.cfg.ProjectID)
+		row, err := mapEntryWithSource(e, d.cfg.ProjectID, source)
 		if err != nil {
 			return nil, err
 		}
@@ -363,7 +378,7 @@ func matchesQuery(condition dal.Condition, row map[string]any) (bool, error) {
 			if c.Operator != dal.Equal {
 				return false, fmt.Errorf("%w: equality filter required", dal.ErrNotSupported)
 			}
-			return strings.EqualFold(actual, expected), nil
+			return cloudLoggingEqual(actual, expected), nil
 		default:
 			return false, fmt.Errorf("%w: filter is unavailable", dal.ErrNotSupported)
 		}
@@ -373,6 +388,10 @@ func matchesQuery(condition dal.Condition, row map[string]any) (bool, error) {
 }
 
 func mapEntry(e *logging.Entry, projectID string) (map[string]any, error) {
+	return mapEntryWithSource(e, projectID, nil)
+}
+
+func mapEntryWithSource(e *logging.Entry, projectID string, source []byte) (map[string]any, error) {
 	row := map[string]any{"parse_status": "parsed", "severity": strings.ToUpper(e.Severity.String()), "source": e.LogName, "parser": "google-cloud-logging", "project_id": projectID, "log_name": e.LogName, "insert_id": e.InsertID}
 	if !e.Timestamp.IsZero() {
 		row["timestamp"] = e.Timestamp.UTC().Format(time.RFC3339Nano)
@@ -415,14 +434,28 @@ func mapEntry(e *logging.Entry, projectID string) (map[string]any, error) {
 		return nil, errors.New("cloudlogging: entry labels cannot be encoded")
 	}
 	row["labels_json"] = string(labels)
-	raw, err := marshalEntry(e)
-	if err != nil {
-		return nil, errors.New("cloudlogging: entry cannot be encoded")
+	if len(source) == 0 {
+		var err error
+		source, err = marshalEntry(e)
+		if err != nil {
+			return nil, errors.New("cloudlogging: entry cannot be encoded")
+		}
 	}
-	row["raw"] = string(raw) // canonical SDK reconstruction, not original wire bytes
-	digest := sha256.Sum256(append([]byte(projectID+"\x00"), raw...))
+	row["raw"] = string(source) // canonical provider entry, including REST-only evidence fields
+	digest := sha256.Sum256(append([]byte(projectID+"\x00"), source...))
 	row["source_ref"] = "gcl:" + hex.EncodeToString(digest[:])
 	return row, nil
+}
+
+// cloudLoggingEqual mirrors Cloud Logging's case-insensitive NFKC case-fold
+// comparison for '='. NFKC both before and after folding handles compatibility
+// characters and canonically equivalent sequences.
+func cloudLoggingEqual(a, b string) bool {
+	folder := cases.Fold()
+	fold := func(s string) string {
+		return norm.NFKC.String(folder.String(norm.NFKC.String(s)))
+	}
+	return fold(a) == fold(b)
 }
 
 // marshalEntry keeps the original SDK encoding when it is supported. Cloud
