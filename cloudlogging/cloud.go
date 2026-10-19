@@ -9,18 +9,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/logging"
+	logpb "cloud.google.com/go/logging/apiv2/loggingpb"
 	"cloud.google.com/go/logging/logadmin"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
 	"github.com/dal-go/dalgo/recordset"
 	"github.com/dal-go/record"
 	"google.golang.org/api/iterator"
+	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 )
 
 type Config struct {
@@ -261,7 +264,7 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 	defer cancel()
 	it := d.entries(ctx, filter, limit)
 	records := make([]record.Record, 0, limit)
-	resultBytes := 0
+	scanBytes := 0
 	for len(records) < limit {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -284,10 +287,17 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 		// Reserve envelope/key overhead for the normal OVDB response in addition
 		// to the complete mapped row, whose payload appears in several fields.
 		entryBytes := len(encoded) + 1024
-		if entryBytes > maxEntryBytes || resultBytes+entryBytes > maxResultBytes {
+		if entryBytes > maxEntryBytes || scanBytes+entryBytes > maxResultBytes {
 			return nil, fmt.Errorf("%w: Cloud Logging result exceeds response byte limit", dal.ErrNotSupported)
 		}
-		resultBytes += entryBytes
+		scanBytes += entryBytes
+		matches, err := matchesQuery(q.Where(), row)
+		if err != nil {
+			return nil, err
+		}
+		if !matches {
+			continue
+		}
 		id := row["source_ref"].(string)
 		if template := q.IntoRecord(); template != nil {
 			if err := record.MapToData(template.Data(), row); err != nil {
@@ -299,6 +309,67 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 		}
 	}
 	return dal.NewRecordsReader(records), nil
+}
+
+func matchesQuery(condition dal.Condition, row map[string]any) (bool, error) {
+	switch c := condition.(type) {
+	case dal.GroupCondition:
+		if c.Operator() != dal.And {
+			return false, fmt.Errorf("%w: only AND filters are supported", dal.ErrNotSupported)
+		}
+		for _, child := range c.Conditions() {
+			matches, err := matchesQuery(child, row)
+			if err != nil || !matches {
+				return matches, err
+			}
+		}
+		return true, nil
+	case dal.Comparison:
+		field, ok := c.Left.(dal.FieldRef)
+		if !ok {
+			return false, fmt.Errorf("%w: unsupported filter field", dal.ErrNotSupported)
+		}
+		constant, ok := c.Right.(dal.Constant)
+		if !ok {
+			return false, fmt.Errorf("%w: constant filter required", dal.ErrNotSupported)
+		}
+		expected, ok := constant.Value.(string)
+		if !ok {
+			return false, fmt.Errorf("%w: string filter required", dal.ErrNotSupported)
+		}
+		actual, ok := row[field.Name()].(string)
+		if !ok {
+			return false, nil
+		}
+		switch field.Name() {
+		case "timestamp":
+			expectedTime, err := time.Parse(time.RFC3339Nano, expected)
+			if err != nil {
+				return false, fmt.Errorf("%w: RFC3339 timestamp required", dal.ErrNotSupported)
+			}
+			actualTime, err := time.Parse(time.RFC3339Nano, actual)
+			if err != nil {
+				return false, nil
+			}
+			switch c.Operator {
+			case dal.GreaterOrEqual:
+				return !actualTime.Before(expectedTime), nil
+			case dal.LessOrEqual:
+				return !actualTime.After(expectedTime), nil
+			default:
+				return false, fmt.Errorf("%w: use inclusive timestamp bounds", dal.ErrNotSupported)
+			}
+		case "severity", "correlation_id", "order_id", "service":
+			if c.Operator != dal.Equal {
+				return false, fmt.Errorf("%w: equality filter required", dal.ErrNotSupported)
+			}
+			return strings.EqualFold(actual, expected), nil
+		default:
+			return false, fmt.Errorf("%w: filter is unavailable", dal.ErrNotSupported)
+		}
+	default:
+		return false, fmt.Errorf("%w: condition shape is unavailable", dal.ErrNotSupported)
+	}
 }
 
 func mapEntry(e *logging.Entry, projectID string) (map[string]any, error) {
@@ -344,7 +415,7 @@ func mapEntry(e *logging.Entry, projectID string) (map[string]any, error) {
 		return nil, errors.New("cloudlogging: entry labels cannot be encoded")
 	}
 	row["labels_json"] = string(labels)
-	raw, err := json.Marshal(e)
+	raw, err := marshalEntry(e)
 	if err != nil {
 		return nil, errors.New("cloudlogging: entry cannot be encoded")
 	}
@@ -352,6 +423,63 @@ func mapEntry(e *logging.Entry, projectID string) (map[string]any, error) {
 	digest := sha256.Sum256(append([]byte(projectID+"\x00"), raw...))
 	row["source_ref"] = "gcl:" + hex.EncodeToString(digest[:])
 	return row, nil
+}
+
+// marshalEntry keeps the original SDK encoding when it is supported. Cloud
+// Logging's HTTPRequest contains an http.Request with function fields, so that
+// case uses a stable JSON-safe representation of every evidence field.
+func marshalEntry(e *logging.Entry) ([]byte, error) {
+	raw, err := json.Marshal(e)
+	if err == nil {
+		return raw, nil
+	}
+	var request *canonicalHTTPRequest
+	if h := e.HTTPRequest; h != nil {
+		request = &canonicalHTTPRequest{
+			RequestSize: h.RequestSize, Status: h.Status, ResponseSize: h.ResponseSize,
+			Latency: h.Latency.String(), LocalIP: h.LocalIP, RemoteIP: h.RemoteIP,
+			CacheHit: h.CacheHit, CacheValidatedWithOriginServer: h.CacheValidatedWithOriginServer,
+			CacheFillBytes: h.CacheFillBytes, CacheLookup: h.CacheLookup,
+		}
+		if h.Request != nil {
+			request.Method = h.Request.Method
+			request.URL = h.Request.URL.String()
+			request.Proto = h.Request.Proto
+			request.Header = h.Request.Header
+		}
+	}
+	return json.Marshal(struct {
+		Timestamp      time.Time                     `json:"Timestamp"`
+		Severity       logging.Severity              `json:"Severity"`
+		Payload        any                           `json:"Payload"`
+		Labels         map[string]string             `json:"Labels"`
+		InsertID       string                        `json:"InsertID"`
+		HTTPRequest    *canonicalHTTPRequest         `json:"HTTPRequest,omitempty"`
+		Operation      *logpb.LogEntryOperation      `json:"Operation,omitempty"`
+		LogName        string                        `json:"LogName"`
+		Resource       *mrpb.MonitoredResource       `json:"Resource,omitempty"`
+		Trace          string                        `json:"Trace"`
+		SpanID         string                        `json:"SpanID"`
+		TraceSampled   bool                          `json:"TraceSampled"`
+		SourceLocation *logpb.LogEntrySourceLocation `json:"SourceLocation,omitempty"`
+	}{e.Timestamp, e.Severity, e.Payload, e.Labels, e.InsertID, request, e.Operation, e.LogName, e.Resource, e.Trace, e.SpanID, e.TraceSampled, e.SourceLocation})
+}
+
+type canonicalHTTPRequest struct {
+	Method                         string      `json:"Method,omitempty"`
+	URL                            string      `json:"URL,omitempty"`
+	Proto                          string      `json:"Proto,omitempty"`
+	Header                         http.Header `json:"Header,omitempty"`
+	RequestSize                    int64       `json:"RequestSize"`
+	Status                         int         `json:"Status"`
+	ResponseSize                   int64       `json:"ResponseSize"`
+	Latency                        string      `json:"Latency"`
+	LocalIP                        string      `json:"LocalIP,omitempty"`
+	RemoteIP                       string      `json:"RemoteIP,omitempty"`
+	CacheHit                       bool        `json:"CacheHit"`
+	CacheValidatedWithOriginServer bool        `json:"CacheValidatedWithOriginServer"`
+	CacheFillBytes                 int64       `json:"CacheFillBytes"`
+	CacheLookup                    bool        `json:"CacheLookup"`
 }
 
 func (d *database) ListCollections(context.Context, *record.Key) ([]dal.CollectionRef, error) {

@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"regexp"
 	"time"
 
+	"cloud.google.com/go/auth"
 	"cloud.google.com/go/logging"
+	logpb "cloud.google.com/go/logging/apiv2/loggingpb"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
-	"golang.org/x/oauth2"
 	"google.golang.org/api/iterator"
 	loggingv2 "google.golang.org/api/logging/v2"
 	"google.golang.org/api/option"
@@ -46,13 +49,14 @@ func (v LogView) resourceName(expectedProject string) (string, error) {
 }
 
 // NewPersonalDB builds a request-scoped, read-only DALGO database using the
-// caller's trusted user token source and one fixed project-local log view.
+// caller's trusted context-aware user token provider and one fixed project-local
+// log view. Token(ctx) must use ctx for any refresh network requests.
 // The caller owns the returned database and should close it after the request.
-func NewPersonalDB(ctx context.Context, cfg Config, view LogView, tokenSource oauth2.TokenSource) (dal.DB, error) {
-	return newPersonalDB(ctx, cfg, view, tokenSource)
+func NewPersonalDB(ctx context.Context, cfg Config, view LogView, tokenProvider auth.TokenProvider) (dal.DB, error) {
+	return newPersonalDB(ctx, cfg, view, tokenProvider)
 }
 
-func newPersonalDB(ctx context.Context, cfg Config, view LogView, tokenSource oauth2.TokenSource, options ...option.ClientOption) (dal.DB, error) {
+func newPersonalDB(ctx context.Context, cfg Config, view LogView, tokenProvider auth.TokenProvider, options ...option.ClientOption) (dal.DB, error) {
 	cfg, err := normalizeConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -61,10 +65,11 @@ func newPersonalDB(ctx context.Context, cfg Config, view LogView, tokenSource oa
 	if err != nil {
 		return nil, err
 	}
-	if tokenSource == nil {
-		return nil, errors.New("cloudlogging: trusted user token source is required")
+	if tokenProvider == nil {
+		return nil, errors.New("cloudlogging: trusted context-aware user token provider is required")
 	}
-	clientOptions := append([]option.ClientOption{option.WithTokenSource(tokenSource)}, options...)
+	credentials := auth.NewCredentials(&auth.CredentialsOptions{TokenProvider: tokenProvider})
+	clientOptions := append([]option.ClientOption{option.WithAuthCredentials(credentials)}, options...)
 	service, err := loggingv2.NewService(ctx, clientOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("cloudlogging: create personal read client: %w", err)
@@ -149,6 +154,41 @@ func convertPersonalEntry(e *loggingv2.LogEntry) (*logging.Entry, error) {
 	}
 	if e.Resource != nil {
 		entry.Resource = &mrpb.MonitoredResource{Type: e.Resource.Type, Labels: e.Resource.Labels}
+	}
+	if e.HttpRequest != nil {
+		requestURL, err := url.Parse(e.HttpRequest.RequestUrl)
+		if err != nil {
+			return nil, errors.New("cloudlogging: invalid HTTP request URL in log entry")
+		}
+		request := &http.Request{
+			Method: e.HttpRequest.RequestMethod,
+			URL:    requestURL,
+			Proto:  e.HttpRequest.Protocol,
+			Header: make(http.Header),
+		}
+		if e.HttpRequest.Referer != "" {
+			request.Header.Set("Referer", e.HttpRequest.Referer)
+		}
+		if e.HttpRequest.UserAgent != "" {
+			request.Header.Set("User-Agent", e.HttpRequest.UserAgent)
+		}
+		latency, err := time.ParseDuration(e.HttpRequest.Latency)
+		if e.HttpRequest.Latency != "" && err != nil {
+			return nil, errors.New("cloudlogging: invalid HTTP request latency in log entry")
+		}
+		entry.HTTPRequest = &logging.HTTPRequest{
+			Request: request, RequestSize: e.HttpRequest.RequestSize,
+			Status: int(e.HttpRequest.Status), ResponseSize: e.HttpRequest.ResponseSize,
+			Latency: latency, LocalIP: e.HttpRequest.ServerIp, RemoteIP: e.HttpRequest.RemoteIp,
+			CacheHit: e.HttpRequest.CacheHit, CacheValidatedWithOriginServer: e.HttpRequest.CacheValidatedWithOriginServer,
+			CacheFillBytes: e.HttpRequest.CacheFillBytes, CacheLookup: e.HttpRequest.CacheLookup,
+		}
+	}
+	if e.Operation != nil {
+		entry.Operation = &logpb.LogEntryOperation{Id: e.Operation.Id, Producer: e.Operation.Producer, First: e.Operation.First, Last: e.Operation.Last}
+	}
+	if e.SourceLocation != nil {
+		entry.SourceLocation = &logpb.LogEntrySourceLocation{File: e.SourceLocation.File, Line: e.SourceLocation.Line, Function: e.SourceLocation.Function}
 	}
 	payload := e.JsonPayload
 	if len(payload) == 0 {

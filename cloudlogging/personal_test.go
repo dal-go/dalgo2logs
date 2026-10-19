@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/auth"
+	"cloud.google.com/go/auth/httptransport"
+	"cloud.google.com/go/logging"
 	"github.com/dal-go/dalgo/dal"
-	"golang.org/x/oauth2"
 	"google.golang.org/api/iterator"
 	loggingv2 "google.golang.org/api/logging/v2"
 	"google.golang.org/api/option"
@@ -25,12 +27,17 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
 
-func apiResponse(request *http.Request, body string) *http.Response {
-	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}
+type staticTokenProvider struct{ token *auth.Token }
+
+func (p staticTokenProvider) Token(ctx context.Context) (*auth.Token, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return p.token, nil
 }
 
-func authHTTPClient(source oauth2.TokenSource, roundTrip roundTripFunc) *http.Client {
-	return &http.Client{Transport: &oauth2.Transport{Source: source, Base: roundTrip}}
+func apiResponse(request *http.Request, body string) *http.Response {
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}
 }
 
 func TestPersonalLogViewValidation(t *testing.T) {
@@ -62,8 +69,8 @@ func TestPersonalLogViewValidation(t *testing.T) {
 func TestPersonalDBUsesTrustedCredentialAndFixedView(t *testing.T) {
 	const resource = "projects/demo-project/locations/global/buckets/_Default/views/_AllLogs"
 	var page loggingv2.ListLogEntriesRequest
-	source := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "user-access"})
-	client := authHTTPClient(source, func(request *http.Request) (*http.Response, error) {
+	provider := staticTokenProvider{token: &auth.Token{Value: "user-access", Type: "Bearer"}}
+	client, err := httptransport.NewClient(&httptransport.Options{Credentials: auth.NewCredentials(&auth.CredentialsOptions{TokenProvider: provider}), BaseRoundTripper: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/entries:list") {
 			t.Errorf("request = %s %s", request.Method, request.URL.Path)
 		}
@@ -73,10 +80,13 @@ func TestPersonalDBUsesTrustedCredentialAndFixedView(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&page); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		return apiResponse(request, `{"entries":[{"timestamp":"2026-10-19T03:30:00Z","severity":"ERROR","logName":"projects/demo-project/logs/app","textPayload":"hello","insertId":"abc"}]}`), nil
-	})
+		return apiResponse(request, `{"entries":[{"timestamp":"2026-10-19T03:30:00Z","severity":"ERROR","logName":"projects/demo-project/logs/app","jsonPayload":{"message":"hello","order_id":"11039"},"insertId":"abc"}]}`), nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := Config{ID: "logs", ProjectID: "demo-project", Collection: "entries", MaxResults: 20, MaxWindow: time.Hour, MaxQueryDuration: time.Second}
-	db, err := newPersonalDB(context.Background(), cfg, validLogView(), source, option.WithHTTPClient(client))
+	db, err := newPersonalDB(context.Background(), cfg, validLogView(), provider, option.WithHTTPClient(client))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,12 +184,91 @@ func TestPersonalPaginationIsBoundedAndCancellationPropagates(t *testing.T) {
 	}
 }
 
+func TestPersonalQueryCancellationStopsTokenRefresh(t *testing.T) {
+	started := make(chan struct{})
+	provider := tokenProviderFunc(func(ctx context.Context) (*auth.Token, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	cfg := Config{ID: "logs", ProjectID: "demo-project", Collection: "entries", MaxResults: 20, MaxWindow: time.Hour, MaxQueryDuration: time.Second}
+	db, err := newPersonalDB(context.Background(), cfg, validLogView(), provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.(interface{ Close() error }).Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := db.ExecuteQueryToRecordsReader(ctx, boundedQuery())
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("token provider was not called")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("query after refresh cancellation = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("query did not stop after refresh cancellation")
+	}
+}
+
+type tokenProviderFunc func(context.Context) (*auth.Token, error)
+
+func (f tokenProviderFunc) Token(ctx context.Context) (*auth.Token, error) { return f(ctx) }
+
 func TestPersonalConfigLimitsRemainBounded(t *testing.T) {
 	cfg := Config{ID: "logs", ProjectID: "demo-project", Collection: "entries", MaxResults: 1001}
-	if _, err := newPersonalDB(context.Background(), cfg, validLogView(), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "token"})); err == nil {
+	if _, err := newPersonalDB(context.Background(), cfg, validLogView(), staticTokenProvider{token: &auth.Token{Value: "token", Type: "Bearer"}}); err == nil {
 		t.Fatal("too many results accepted")
 	}
 	if _, _, err := buildFilter(boundedQuery(), Config{Collection: "other", MaxResults: 20, MaxWindow: time.Hour}); !errors.Is(err, dal.ErrNotSupported) {
 		t.Fatalf("collection escape = %v", err)
+	}
+}
+
+func TestPersonalEntryConversionPreservesEvidenceAndReferenceIdentity(t *testing.T) {
+	baseline, err := convertPersonalEntry(&loggingv2.LogEntry{TextPayload: "same"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineRow, err := mapEntry(baseline, "demo-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpEntry, err := convertPersonalEntry(&loggingv2.LogEntry{TextPayload: "same", HttpRequest: &loggingv2.HttpRequest{
+		RequestMethod: "POST", RequestUrl: "https://example.test/orders?id=1", Protocol: "HTTP/2",
+		UserAgent: "test-agent", RequestSize: 17, Status: 503, ResponseSize: 31, Latency: "250ms",
+		RemoteIp: "192.0.2.10", ServerIp: "192.0.2.20", CacheHit: true, CacheLookup: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if httpEntry.HTTPRequest == nil || httpEntry.HTTPRequest.Request == nil || httpEntry.HTTPRequest.Request.URL.String() != "https://example.test/orders?id=1" || httpEntry.HTTPRequest.Status != 503 || httpEntry.HTTPRequest.Latency != 250*time.Millisecond {
+		t.Fatalf("HTTP request evidence was not preserved: %#v", httpEntry.HTTPRequest)
+	}
+	operationEntry, err := convertPersonalEntry(&loggingv2.LogEntry{TextPayload: "same", Operation: &loggingv2.LogEntryOperation{Id: "op-1", Producer: "worker", First: true, Last: true}})
+	if err != nil || operationEntry.Operation == nil || operationEntry.Operation.Id != "op-1" || !operationEntry.Operation.First || !operationEntry.Operation.Last {
+		t.Fatalf("operation evidence = %#v, %v", operationEntry, err)
+	}
+	sourceEntry, err := convertPersonalEntry(&loggingv2.LogEntry{TextPayload: "same", SourceLocation: &loggingv2.LogEntrySourceLocation{File: "worker.go", Line: 42, Function: "processOrder"}})
+	if err != nil || sourceEntry.SourceLocation == nil || sourceEntry.SourceLocation.File != "worker.go" || sourceEntry.SourceLocation.Line != 42 {
+		t.Fatalf("source location evidence = %#v, %v", sourceEntry, err)
+	}
+	for name, entry := range map[string]*logging.Entry{"HTTPRequest": httpEntry, "Operation": operationEntry, "SourceLocation": sourceEntry} {
+		row, err := mapEntry(entry, "demo-project")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row["source_ref"] == baselineRow["source_ref"] || !strings.Contains(row["raw"].(string), name) {
+			t.Errorf("%s missing from raw evidence or source reference did not change: %#v", name, row)
+		}
 	}
 }

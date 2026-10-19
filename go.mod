@@ -3,6 +3,7 @@ module github.com/dal-go/dalgo2logs
 go 1.26.1
 
 require (
+	cloud.google.com/go/auth v0.22.0
 	cloud.google.com/go/logging v1.20.0
 	github.com/dal-go/dalgo v0.93.0
 	github.com/dal-go/record v0.1.4
@@ -48,7 +49,6 @@ require (
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
-	cloud.google.com/go/auth v0.22.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.12.0 // indirect

@@ -10,6 +10,7 @@ import (
 	"cloud.google.com/go/logging"
 	"github.com/dal-go/dalgo/dal"
 	"google.golang.org/api/iterator"
+	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 )
 
 type fakeReader struct {
@@ -155,5 +156,53 @@ func TestCloudQueryBoundsCompleteMappedRows(t *testing.T) {
 		WhereField("timestamp", dal.LessOrEqual, "2026-10-19T04:00:00Z").Limit(20).SelectIntoRecord(nil)
 	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), q); !errors.Is(err, dal.ErrNotSupported) {
 		t.Fatalf("cumulative mapped rows exceeded result budget: %v", err)
+	}
+}
+
+func TestCloudQueryHonorsMappedAliasPrecedenceBeforeLimit(t *testing.T) {
+	withinWindow := time.Date(2026, 10, 19, 3, 30, 0, 0, time.UTC)
+	tests := []struct {
+		field   string
+		entries []*logging.Entry
+	}{
+		{field: "order_id", entries: []*logging.Entry{
+			{Timestamp: withinWindow, Labels: map[string]string{"order_id": "11039"}, Payload: map[string]any{"message": "conflicting alias", "order_id": "different"}},
+			{Timestamp: withinWindow, Labels: map[string]string{"order_id": "11039"}, Payload: map[string]any{"message": "matching payload", "order_id": "11039"}},
+		}},
+		{field: "correlation_id", entries: []*logging.Entry{
+			{Timestamp: withinWindow, Trace: "11039", Labels: map[string]string{"correlation_id": "11039"}, Payload: map[string]any{"message": "conflicting alias", "correlation_id": "different"}},
+			{Timestamp: withinWindow, Trace: "different", Labels: map[string]string{"correlation_id": "different"}, Payload: map[string]any{"message": "matching payload", "correlation_id": "11039"}},
+		}},
+		{field: "service", entries: []*logging.Entry{
+			{Timestamp: withinWindow, Resource: &mrpb.MonitoredResource{Labels: map[string]string{"service_name": "11039"}}, Labels: map[string]string{"service": "11039"}, Payload: map[string]any{"message": "conflicting alias", "service": "different"}},
+			{Timestamp: withinWindow, Resource: &mrpb.MonitoredResource{Labels: map[string]string{"service_name": "different"}}, Labels: map[string]string{"service": "different"}, Payload: map[string]any{"message": "matching payload", "service": "11039"}},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.field, func(t *testing.T) {
+			db := &database{cfg: Config{Collection: "entries", ProjectID: "owned-project", MaxResults: 20, MaxWindow: time.Hour, MaxQueryDuration: time.Second}, entries: func(context.Context, string, int) entryReader {
+				return &fakeReader{entries: tc.entries}
+			}}
+			q := dal.From(dal.NewRootCollectionRef("entries", "")).NewQuery().
+				WhereField("timestamp", dal.GreaterOrEqual, "2026-10-19T03:00:00Z").
+				WhereField("timestamp", dal.LessOrEqual, "2026-10-19T04:00:00Z").
+				WhereField(tc.field, dal.Equal, "11039").Limit(1).SelectIntoRecord(nil)
+			reader, err := db.ExecuteQueryToRecordsReader(context.Background(), q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			row, err := reader.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := row.Data().(map[string]any)
+			if data["message"] != "matching payload" || data[tc.field] != "11039" {
+				t.Fatalf("query returned a row whose mapped value does not match the predicate: %#v", data)
+			}
+			if _, err := reader.Next(); err != dal.ErrNoMoreRecords {
+				t.Fatalf("result limit = %v", err)
+			}
+		})
 	}
 }
