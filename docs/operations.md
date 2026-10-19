@@ -38,7 +38,12 @@ to a non-loopback URL.
 Every Cloud query requires inclusive RFC3339 lower and upper timestamp bounds.
 Defaults: at most 24 hours, 200 returned entries and 30 seconds. Hard
 ceilings: seven days, 1,000 entries, five minutes, 1 MiB per reconstructed
-entry and 16 MiB per response. The source performs a bounded
+entry, 16 MiB scanned and returned, and 10 personal API pages. Configure lower
+`MaxEntryBytes`, `MaxScanBytes`, `MaxResultBytes` and `MaxPages` in trusted
+hosted state; these defaults are hard ceilings. Scan bytes include local
+predicate misses. A budget exhaustion returns `cloudlogging.ErrLimitExceeded`
+and `*cloudlogging.LimitError` (with its `Kind` and `Limit`) so the host can
+distinguish incomplete results from no matches. The source performs a bounded
 `entries.list` call on every query. No entries are stored by this adapter.
 
 This single-owner local path lets a developer inspect a project they control.

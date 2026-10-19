@@ -18,6 +18,10 @@ type fakeReader struct {
 	index   int
 }
 
+type nextReader func() (*logging.Entry, error)
+
+func (f nextReader) Next() (*logging.Entry, error) { return f() }
+
 func (f *fakeReader) Next() (*logging.Entry, error) {
 	if f.index >= len(f.entries) {
 		return nil, iterator.Done
@@ -159,6 +163,98 @@ func TestCloudQueryBoundsCompleteMappedRows(t *testing.T) {
 		WhereField("timestamp", dal.LessOrEqual, "2026-10-19T04:00:00Z").Limit(20).SelectIntoRecord(nil)
 	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), q); !errors.Is(err, dal.ErrNotSupported) {
 		t.Fatalf("cumulative mapped rows exceeded result budget: %v", err)
+	}
+}
+
+func TestHostedByteBudgets(t *testing.T) {
+	entry := &logging.Entry{Timestamp: time.Date(2026, 10, 19, 3, 30, 0, 0, time.UTC), Payload: map[string]any{"message": strings.Repeat("x", 100_000), "order_id": "11039"}}
+	entries := make([]*logging.Entry, 10)
+	for i := range entries {
+		entries[i] = entry
+	}
+	base := Config{ID: "logs", Collection: "entries", ProjectID: "demo-project", MaxResults: 20, MaxWindow: time.Hour, MaxQueryDuration: time.Minute}
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		kind LimitKind
+	}{
+		{"hosted 2MiB scan cap", func() Config { c := base; c.MaxScanBytes = 2 << 20; return c }(), LimitScanBytes},
+		{"per entry cap", func() Config { c := base; c.MaxEntryBytes = 4096; return c }(), LimitEntryBytes},
+		{"result cap", func() Config { c := base; c.MaxResultBytes = 400_000; return c }(), LimitResultBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := normalizeConfig(tc.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			db := &database{cfg: cfg, entries: func(context.Context, string, int) entryReader { return &fakeReader{entries: entries} }}
+			_, err = db.ExecuteQueryToRecordsReader(context.Background(), boundedQuery())
+			var limit *LimitError
+			if !errors.Is(err, ErrLimitExceeded) || !errors.Is(err, dal.ErrNotSupported) || !errors.As(err, &limit) || limit.Kind != tc.kind {
+				t.Fatalf("limit error = %v, want %s", err, tc.kind)
+			}
+		})
+	}
+}
+
+func TestHostedScanCountsLocalMisses(t *testing.T) {
+	entry := &logging.Entry{Timestamp: time.Date(2026, 10, 19, 3, 30, 0, 0, time.UTC), Labels: map[string]string{"order_id": "11039"}, Payload: map[string]any{"message": strings.Repeat("x", 100_000), "order_id": "different"}}
+	entries := make([]*logging.Entry, 10)
+	for i := range entries {
+		entries[i] = entry
+	}
+	cfg, err := normalizeConfig(Config{ID: "logs", Collection: "entries", ProjectID: "demo-project", MaxResults: 20, MaxWindow: time.Hour, MaxQueryDuration: time.Minute, MaxScanBytes: 2 << 20, MaxResultBytes: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := &database{cfg: cfg, entries: func(context.Context, string, int) entryReader { return &fakeReader{entries: entries} }}
+	_, err = db.ExecuteQueryToRecordsReader(context.Background(), boundedQuery())
+	var limit *LimitError
+	if !errors.As(err, &limit) || limit.Kind != LimitScanBytes {
+		t.Fatalf("local misses should exhaust scan budget: %v", err)
+	}
+}
+
+func TestHostedBudgetConfigurationRejectsInvalidValues(t *testing.T) {
+	base := Config{ID: "logs", Collection: "entries", ProjectID: "demo-project"}
+	for _, tc := range []struct {
+		name   string
+		change func(*Config)
+	}{
+		{"negative entry", func(c *Config) { c.MaxEntryBytes = -1 }},
+		{"entry ceiling", func(c *Config) { c.MaxEntryBytes = maxEntryBytes + 1 }},
+		{"negative scan", func(c *Config) { c.MaxScanBytes = -1 }},
+		{"scan ceiling", func(c *Config) { c.MaxScanBytes = maxResultBytes + 1 }},
+		{"negative result", func(c *Config) { c.MaxResultBytes = -1 }},
+		{"result ceiling", func(c *Config) { c.MaxResultBytes = maxResultBytes + 1 }},
+		{"negative pages", func(c *Config) { c.MaxPages = -1 }},
+		{"page ceiling", func(c *Config) { c.MaxPages = maxPersonalPages + 1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			tc.change(&cfg)
+			if _, err := normalizeConfig(cfg); err == nil {
+				t.Fatal("invalid budget accepted")
+			}
+		})
+	}
+	cfg, err := normalizeConfig(base)
+	if err != nil || cfg.MaxEntryBytes != maxEntryBytes || cfg.MaxScanBytes != maxResultBytes || cfg.MaxResultBytes != maxResultBytes || cfg.MaxPages != maxPersonalPages {
+		t.Fatalf("default budgets = %#v, %v", cfg, err)
+	}
+}
+
+func TestCloudQueryCancellationAfterProviderRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db := &database{cfg: Config{Collection: "entries", ProjectID: "demo-project", MaxResults: 20, MaxWindow: time.Hour, MaxQueryDuration: time.Minute}, entries: func(context.Context, string, int) entryReader {
+		return nextReader(func() (*logging.Entry, error) {
+			cancel()
+			return nil, iterator.Done
+		})
+	}}
+	if _, err := db.ExecuteQueryToRecordsReader(ctx, boundedQuery()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation after provider read = %v", err)
 	}
 }
 

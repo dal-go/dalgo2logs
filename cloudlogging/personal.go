@@ -33,7 +33,6 @@ type LogView struct {
 }
 
 const (
-	maxPersonalPages    = 10
 	maxPersonalPageSize = 100
 )
 
@@ -81,7 +80,7 @@ func newPersonalDB(ctx context.Context, cfg Config, view LogView, tokenProvider 
 		if pageSize > maxPersonalPageSize {
 			pageSize = maxPersonalPageSize
 		}
-		return &personalEntryReader{ctx: ctx, list: func(request *loggingv2.ListLogEntriesRequest) *loggingv2.EntriesListCall {
+		return &personalEntryReader{ctx: ctx, maxPages: cfg.MaxPages, list: func(request *loggingv2.ListLogEntriesRequest) *loggingv2.EntriesListCall {
 			return service.Entries.List(request)
 		}, request: &loggingv2.ListLogEntriesRequest{
 			ResourceNames: []string{resource}, Filter: filter, OrderBy: "timestamp desc", PageSize: int64(pageSize),
@@ -96,6 +95,7 @@ type personalEntryReader struct {
 	request    *loggingv2.ListLogEntriesRequest
 	pageToken  string
 	pages      int
+	maxPages   int
 	entries    []*loggingv2.LogEntry
 	entryIndex int
 	done       bool
@@ -108,6 +108,9 @@ func (r *personalEntryReader) Next() (*logging.Entry, error) {
 
 func (r *personalEntryReader) NextWithSource() (*logging.Entry, []byte, error) {
 	for {
+		if err := r.ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		if r.entryIndex < len(r.entries) {
 			entry := r.entries[r.entryIndex]
 			r.entryIndex++
@@ -130,8 +133,12 @@ func (r *personalEntryReader) NextWithSource() (*logging.Entry, []byte, error) {
 		if r.done {
 			return nil, nil, iterator.Done
 		}
-		if r.pages >= maxPersonalPages {
-			return nil, nil, errors.New("cloudlogging: personal log query exceeded page budget")
+		maxPages := r.maxPages
+		if maxPages == 0 {
+			maxPages = maxPersonalPages
+		}
+		if r.pages >= maxPages {
+			return nil, nil, &LimitError{Kind: LimitPages, Limit: maxPages}
 		}
 		request := *r.request
 		request.PageToken = r.pageToken
