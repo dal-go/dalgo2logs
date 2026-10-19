@@ -99,7 +99,7 @@ func (h *cloudHandle) Close() error { return h.closeFn() }
 
 var _ dal.Backend = (*database)(nil)
 var _ dbschema.SchemaReader = (*database)(nil)
-var projectID = regexp.MustCompile(`^[a-z][a-z0-9-]{4,61}[a-z0-9]$`)
+var projectID = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 
 // NewDB uses Application Default Credentials. The caller must grant only
 // logging.logEntries.list on the configured project and enforce user access to
