@@ -39,6 +39,7 @@ type database struct {
 	dal.NoConcurrency
 	cfg     Config
 	client  *logadmin.Client
+	closeFn func() error
 	entries func(context.Context, string, int) entryReader
 }
 
@@ -49,10 +50,10 @@ type entryReader interface {
 type cloudHandle struct {
 	dal.DB
 	dbschema.SchemaReader
-	client *logadmin.Client
+	closeFn func() error
 }
 
-func (h *cloudHandle) Close() error { return h.client.Close() }
+func (h *cloudHandle) Close() error { return h.closeFn() }
 
 var _ dal.Backend = (*database)(nil)
 var _ dbschema.SchemaReader = (*database)(nil)
@@ -62,8 +63,24 @@ var projectID = regexp.MustCompile(`^[a-z][a-z0-9-]{4,61}[a-z0-9]$`)
 // logging.logEntries.list on the configured project and enforce user access to
 // this server-side connection before a request reaches the OVDB handler.
 func NewDB(ctx context.Context, cfg Config) (dal.DB, error) {
+	cfg, err := normalizeConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	client, err := logadmin.NewClient(ctx, cfg.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("cloudlogging: create read client: %w", err)
+	}
+	backend := &database{cfg: cfg, client: client, entries: func(ctx context.Context, filter string, limit int) entryReader {
+		return client.Entries(ctx, logadmin.Filter(filter), logadmin.NewestFirst(), logadmin.PageSize(int32(limit)))
+	}}
+	backend.closeFn = client.Close
+	return &cloudHandle{DB: dal.NewDB(backend), SchemaReader: backend, closeFn: client.Close}, nil
+}
+
+func normalizeConfig(cfg Config) (Config, error) {
 	if cfg.ID == "" || cfg.Collection == "" || !projectID.MatchString(cfg.ProjectID) {
-		return nil, errors.New("cloudlogging: ID, Collection and a valid ProjectID are required")
+		return Config{}, errors.New("cloudlogging: ID, Collection and a valid ProjectID are required")
 	}
 	if cfg.MaxResults == 0 {
 		cfg.MaxResults = 200
@@ -75,19 +92,20 @@ func NewDB(ctx context.Context, cfg Config) (dal.DB, error) {
 		cfg.MaxQueryDuration = 30 * time.Second
 	}
 	if cfg.MaxResults < 1 || cfg.MaxResults > 1000 || cfg.MaxWindow < time.Minute || cfg.MaxWindow > 7*24*time.Hour || cfg.MaxQueryDuration < time.Second || cfg.MaxQueryDuration > 5*time.Minute {
-		return nil, errors.New("cloudlogging: limits exceed supported bounds")
+		return Config{}, errors.New("cloudlogging: limits exceed supported bounds")
 	}
-	client, err := logadmin.NewClient(ctx, cfg.ProjectID)
-	if err != nil {
-		return nil, fmt.Errorf("cloudlogging: create read client: %w", err)
-	}
-	backend := &database{cfg: cfg, client: client, entries: func(ctx context.Context, filter string, limit int) entryReader {
-		return client.Entries(ctx, logadmin.Filter(filter), logadmin.NewestFirst(), logadmin.PageSize(int32(limit)))
-	}}
-	return &cloudHandle{DB: dal.NewDB(backend), SchemaReader: backend, client: client}, nil
+	return cfg, nil
 }
 
-func (d *database) Close() error       { return d.client.Close() }
+func (d *database) Close() error {
+	if d.closeFn != nil {
+		return d.closeFn()
+	}
+	if d.client != nil {
+		return d.client.Close()
+	}
+	return nil
+}
 func (d *database) ID() string         { return d.cfg.ID }
 func (*database) Adapter() dal.Adapter { return dal.NewAdapter("dalgo2logs/cloudlogging", "0.1") }
 func (*database) Schema() dal.Schema   { return nil }
