@@ -170,7 +170,7 @@ func TestPersonalPaginationIsBoundedAndCancellationPropagates(t *testing.T) {
 		return service.Entries.List(request)
 	}
 	reader := &personalEntryReader{ctx: context.Background(), list: list, request: &loggingv2.ListLogEntriesRequest{ResourceNames: []string{"projects/demo-project/locations/global/buckets/_Default/views/_AllLogs"}, PageSize: 1}}
-	if _, err := reader.Next(); err == nil || !strings.Contains(err.Error(), "page budget") {
+	if _, err := reader.Next(); !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("page budget result = %v", err)
 	}
 	if requests != maxPersonalPages {
@@ -181,6 +181,25 @@ func TestPersonalPaginationIsBoundedAndCancellationPropagates(t *testing.T) {
 	reader = &personalEntryReader{ctx: ctx, list: list, request: &loggingv2.ListLogEntriesRequest{ResourceNames: []string{"projects/demo-project/locations/global/buckets/_Default/views/_AllLogs"}, PageSize: 1}}
 	if _, err := reader.Next(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation = %v", err)
+	}
+}
+
+func TestPersonalConfiguredPageBudgetStopsEmptyPages(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		return apiResponse(request, `{"entries":[],"nextPageToken":"more"}`), nil
+	})}
+	cfg := Config{ID: "logs", ProjectID: "demo-project", Collection: "entries", MaxPages: 3}
+	db, err := newPersonalDB(context.Background(), cfg, validLogView(), staticTokenProvider{token: &auth.Token{Value: "user-access", Type: "Bearer"}}, option.WithHTTPClient(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.(interface{ Close() error }).Close()
+	_, err = db.ExecuteQueryToRecordsReader(context.Background(), boundedQuery())
+	var limit *LimitError
+	if !errors.Is(err, ErrLimitExceeded) || !errors.As(err, &limit) || limit.Kind != LimitPages || limit.Limit != 3 || requests != 3 {
+		t.Fatalf("page limit = %v, calls = %d", err, requests)
 	}
 }
 

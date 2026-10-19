@@ -33,10 +33,43 @@ type Config struct {
 	MaxResults       int
 	MaxWindow        time.Duration
 	MaxQueryDuration time.Duration
+	MaxEntryBytes    int // complete mapped entry plus response envelope allowance
+	MaxScanBytes     int // all entries examined, including local predicate misses
+	MaxResultBytes   int // entries returned after local predicate checks
+	MaxPages         int // personal Cloud Logging API pages
 }
 
 const maxEntryBytes = 1 << 20
 const maxResultBytes = 16 << 20
+const maxPersonalPages = 10
+
+// LimitKind identifies which configured budget stopped a query.
+type LimitKind string
+
+const (
+	LimitResults     LimitKind = "results"
+	LimitEntryBytes  LimitKind = "entry_bytes"
+	LimitScanBytes   LimitKind = "scan_bytes"
+	LimitResultBytes LimitKind = "result_bytes"
+	LimitPages       LimitKind = "pages"
+)
+
+// ErrLimitExceeded lets callers distinguish an incomplete query from no matches.
+var ErrLimitExceeded = errors.New("cloudlogging: query limit exceeded")
+
+// LimitError reports a configured limit without exposing log content.
+// It retains dal.ErrNotSupported compatibility for existing DALGO callers.
+type LimitError struct {
+	Kind  LimitKind
+	Limit int
+}
+
+func (e *LimitError) Error() string {
+	return fmt.Sprintf("cloudlogging: %s limit exceeded (%d)", e.Kind, e.Limit)
+}
+
+func (*LimitError) Unwrap() error        { return dal.ErrNotSupported }
+func (*LimitError) Is(target error) bool { return target == ErrLimitExceeded }
 
 type database struct {
 	dal.NoConcurrency
@@ -100,8 +133,23 @@ func normalizeConfig(cfg Config) (Config, error) {
 	if cfg.MaxQueryDuration == 0 {
 		cfg.MaxQueryDuration = 30 * time.Second
 	}
+	if cfg.MaxEntryBytes == 0 {
+		cfg.MaxEntryBytes = maxEntryBytes
+	}
+	if cfg.MaxScanBytes == 0 {
+		cfg.MaxScanBytes = maxResultBytes
+	}
+	if cfg.MaxResultBytes == 0 {
+		cfg.MaxResultBytes = maxResultBytes
+	}
+	if cfg.MaxPages == 0 {
+		cfg.MaxPages = maxPersonalPages
+	}
 	if cfg.MaxResults < 1 || cfg.MaxResults > 1000 || cfg.MaxWindow < time.Minute || cfg.MaxWindow > 7*24*time.Hour || cfg.MaxQueryDuration < time.Second || cfg.MaxQueryDuration > 5*time.Minute {
 		return Config{}, errors.New("cloudlogging: limits exceed supported bounds")
+	}
+	if cfg.MaxEntryBytes < 1 || cfg.MaxEntryBytes > maxEntryBytes || cfg.MaxScanBytes < 1 || cfg.MaxScanBytes > maxResultBytes || cfg.MaxResultBytes < 1 || cfg.MaxResultBytes > maxResultBytes || cfg.MaxPages < 1 || cfg.MaxPages > maxPersonalPages {
+		return Config{}, errors.New("cloudlogging: byte or page budgets exceed supported bounds")
 	}
 	return cfg, nil
 }
@@ -162,7 +210,7 @@ func buildFilter(q dal.StructuredQuery, cfg Config) (string, int, error) {
 		limit = cfg.MaxResults
 	}
 	if limit < 1 || limit > cfg.MaxResults {
-		return "", 0, fmt.Errorf("%w: limit exceeds configured maximum", dal.ErrNotSupported)
+		return "", 0, &LimitError{Kind: LimitResults, Limit: cfg.MaxResults}
 	}
 	var parts []string
 	var lower, upper time.Time
@@ -270,7 +318,7 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 	defer cancel()
 	it := d.entries(ctx, filter, limit)
 	records := make([]record.Record, 0, limit)
-	scanBytes := 0
+	scanBytes, resultBytes := 0, 0
 	for len(records) < limit {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -282,6 +330,9 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 			e, source, err = sourced.NextWithSource()
 		} else {
 			e, err = it.Next()
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
 		if err == iterator.Done {
 			break
@@ -300,8 +351,11 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 		// Reserve envelope/key overhead for the normal OVDB response in addition
 		// to the complete mapped row, whose payload appears in several fields.
 		entryBytes := len(encoded) + 1024
-		if entryBytes > maxEntryBytes || scanBytes+entryBytes > maxResultBytes {
-			return nil, fmt.Errorf("%w: Cloud Logging result exceeds response byte limit", dal.ErrNotSupported)
+		if entryBytes > d.cfg.entryBudget() {
+			return nil, &LimitError{Kind: LimitEntryBytes, Limit: d.cfg.entryBudget()}
+		}
+		if scanBytes+entryBytes > d.cfg.scanBudget() {
+			return nil, &LimitError{Kind: LimitScanBytes, Limit: d.cfg.scanBudget()}
 		}
 		scanBytes += entryBytes
 		matches, err := matchesQuery(q.Where(), row)
@@ -311,6 +365,10 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 		if !matches {
 			continue
 		}
+		if resultBytes+entryBytes > d.cfg.resultBudget() {
+			return nil, &LimitError{Kind: LimitResultBytes, Limit: d.cfg.resultBudget()}
+		}
+		resultBytes += entryBytes
 		id := row["source_ref"].(string)
 		if template := q.IntoRecord(); template != nil {
 			if err := record.MapToData(template.Data(), row); err != nil {
@@ -322,6 +380,27 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 		}
 	}
 	return dal.NewRecordsReader(records), nil
+}
+
+// Zero-value budget fallbacks also support package-local test backends that
+// construct database directly instead of calling NewDB/NewPersonalDB.
+func (c Config) entryBudget() int {
+	if c.MaxEntryBytes != 0 {
+		return c.MaxEntryBytes
+	}
+	return maxEntryBytes
+}
+func (c Config) scanBudget() int {
+	if c.MaxScanBytes != 0 {
+		return c.MaxScanBytes
+	}
+	return maxResultBytes
+}
+func (c Config) resultBudget() int {
+	if c.MaxResultBytes != 0 {
+		return c.MaxResultBytes
+	}
+	return maxResultBytes
 }
 
 func matchesQuery(condition dal.Condition, row map[string]any) (bool, error) {

@@ -34,8 +34,13 @@ Grant the process only the Cloud Logging read permission it needs. Every query
 must have an explicit inclusive RFC3339 time range. The default maximum window
 is 24 hours, with a seven-day ceiling; the result limit defaults to 200 with
 a 1,000 ceiling; timeout defaults to 30 seconds with a five-minute ceiling.
-Results are newest first. A reconstructed entry is capped at 1 MiB and a
-response at 16 MiB; an oversized response fails instead of dropping evidence.
+Results are newest first. The default budgets are 1 MiB per reconstructed
+entry, 16 MiB scanned and returned, and 10 personal API pages. Trusted hosted
+configuration can lower them through `MaxEntryBytes`, `MaxScanBytes`,
+`MaxResultBytes` and `MaxPages`; those defaults are hard ceilings. Scanned bytes
+include entries rejected by local predicate checks. Budget exhaustion returns
+`cloudlogging.ErrLimitExceeded` with a typed `LimitError` rather than an empty
+result, and also remains compatible with `dal.ErrNotSupported`.
 
 The adapter accepts equality on severity, service, order_id and
 correlation_id. Identifier predicates check matching JSON payload and labels;
