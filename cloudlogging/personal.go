@@ -38,13 +38,20 @@ const (
 
 var (
 	logViewLocation = regexp.MustCompile(`^[a-z0-9-]+$`)
-	logViewPart     = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	logViewBucket   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`)
+	logViewID       = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
 )
+
+// ErrInvalid identifies an invalid project-local log view without exposing a
+// user-supplied resource name in diagnostics.
+var ErrInvalid = errors.New("cloudlogging: invalid project-local log view")
 
 func (v LogView) resourceName(expectedProject string) (string, error) {
 	if !projectID.MatchString(v.ProjectID) || v.ProjectID != expectedProject ||
-		!logViewLocation.MatchString(v.Location) || !logViewPart.MatchString(v.Bucket) || !logViewPart.MatchString(v.View) {
-		return "", errors.New("cloudlogging: invalid project-local log view")
+		!logViewLocation.MatchString(v.Location) ||
+		!(logViewBucket.MatchString(v.Bucket) || v.Bucket == "_Default" || v.Bucket == "_Required") ||
+		!logViewID.MatchString(v.View) {
+		return "", ErrInvalid
 	}
 	return "projects/" + v.ProjectID + "/locations/" + v.Location + "/buckets/" + v.Bucket + "/views/" + v.View, nil
 }

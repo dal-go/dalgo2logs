@@ -46,17 +46,39 @@ func TestPersonalLogViewValidation(t *testing.T) {
 	if err != nil || resource != "projects/demo-project/locations/global/buckets/_Default/views/_AllLogs" {
 		t.Fatalf("resource = %q, %v", resource, err)
 	}
+	view.Bucket = "orders.prod_2026"
+	resource, err = view.resourceName("demo-project")
+	if err != nil || resource != "projects/demo-project/locations/global/buckets/orders.prod_2026/views/_AllLogs" {
+		t.Fatalf("dotted bucket resource = %q, %v", resource, err)
+	}
+	view.Bucket = "_Required"
+	if _, err := view.resourceName("demo-project"); err != nil {
+		t.Fatalf("reserved bucket: %v", err)
+	}
+	view.Bucket = strings.Repeat("b", 100)
+	view.View = strings.Repeat("v", 100)
+	if _, err := view.resourceName("demo-project"); err != nil {
+		t.Fatalf("maximum-length identifiers: %v", err)
+	}
 	for _, tc := range []struct {
 		name string
 		view LogView
 	}{
 		{"different project", LogView{ProjectID: "other-project", Location: "global", Bucket: "_Default", View: "_AllLogs"}},
+		{"project too long", LogView{ProjectID: "a" + strings.Repeat("b", 29) + "c", Location: "global", Bucket: "_Default", View: "_AllLogs"}},
 		{"path injection", LogView{ProjectID: "demo-project", Location: "global/buckets/evil", Bucket: "_Default", View: "_AllLogs"}},
+		{"bucket path injection", LogView{ProjectID: "demo-project", Location: "global", Bucket: "orders/../../evil", View: "_AllLogs"}},
+		{"encoded slash", LogView{ProjectID: "demo-project", Location: "global", Bucket: "orders%2Fevil", View: "_AllLogs"}},
+		{"leading dot", LogView{ProjectID: "demo-project", Location: "global", Bucket: "..", View: "_AllLogs"}},
+		{"leading underscore", LogView{ProjectID: "demo-project", Location: "global", Bucket: "_other", View: "_AllLogs"}},
+		{"bucket too long", LogView{ProjectID: "demo-project", Location: "global", Bucket: strings.Repeat("a", 101), View: "_AllLogs"}},
+		{"view dot", LogView{ProjectID: "demo-project", Location: "global", Bucket: "orders.prod", View: "v.1"}},
+		{"view too long", LogView{ProjectID: "demo-project", Location: "global", Bucket: "orders.prod", View: strings.Repeat("v", 101)}},
 		{"empty view", LogView{ProjectID: "demo-project", Location: "global", Bucket: "_Default", View: ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := tc.view.resourceName("demo-project"); err == nil {
-				t.Fatal("invalid log view accepted")
+			if _, err := tc.view.resourceName("demo-project"); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("invalid log view error = %v", err)
 			}
 		})
 	}
@@ -67,7 +89,7 @@ func TestPersonalLogViewValidation(t *testing.T) {
 }
 
 func TestPersonalDBUsesTrustedCredentialAndFixedView(t *testing.T) {
-	const resource = "projects/demo-project/locations/global/buckets/_Default/views/_AllLogs"
+	const resource = "projects/demo-project/locations/global/buckets/orders.prod_2026/views/_AllLogs"
 	var page loggingv2.ListLogEntriesRequest
 	provider := staticTokenProvider{token: &auth.Token{Value: "user-access", Type: "Bearer"}}
 	client, err := httptransport.NewClient(&httptransport.Options{Credentials: auth.NewCredentials(&auth.CredentialsOptions{TokenProvider: provider}), BaseRoundTripper: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -86,7 +108,9 @@ func TestPersonalDBUsesTrustedCredentialAndFixedView(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{ID: "logs", ProjectID: "demo-project", Collection: "entries", MaxResults: 20, MaxWindow: time.Hour, MaxQueryDuration: time.Second}
-	db, err := newPersonalDB(context.Background(), cfg, validLogView(), provider, option.WithHTTPClient(client))
+	view := validLogView()
+	view.Bucket = "orders.prod_2026"
+	db, err := newPersonalDB(context.Background(), cfg, view, provider, option.WithHTTPClient(client))
 	if err != nil {
 		t.Fatal(err)
 	}
