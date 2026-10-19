@@ -10,7 +10,7 @@ Feature specifications for this project.
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| [Direct log evidence sources](direct-log-evidence/README.md) | Draft | Read file and Google Cloud Logging entries through DALGO and unchanged OpenVaultDB queries for a DataTug investigation. |
+| [Direct log evidence sources](direct-log-evidence/README.md) | Implementing | Read file and Google Cloud Logging entries through DALGO and unchanged OpenVaultDB queries for a DataTug investigation. |
 
 ## Open Questions
 
