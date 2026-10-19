@@ -1,6 +1,7 @@
 # ADR: Direct DALGO sources for investigation evidence
 
-Status: implemented, locally verified and merged across OVDB, adapter, demo and DataTug, 2026-10-19.
+Status: local investigation implemented and verified; hosted Google Cloud Logging
+code merged but disabled pending a live authorization pilot, 2026-10-19.
 
 ## Decision
 
@@ -8,9 +9,10 @@ Use one read-only DALGO adapter for explicitly configured local files and one
 for a configured Google Cloud Logging project. A trusted process gives the
 driver to OVDB through a generic programmatic read-only mount. Existing OVDB
 discovery, query, metadata and result routes are reused. OVDB core contains no
-log parser, correlation rule or log presentation logic. DataTug owns explicit
-field mapping and presentation; a mapped PostgreSQL table can use the same
-view. The initial Northwind story maps real order 11039 to synthetic logs.
+log parser, correlation rule or log presentation logic. DataTug owns the demo's
+explicit order field mapping and AG Grid presentation. The Northwind story maps real
+order 11039 to synthetic logs. Configurable mapping for a PostgreSQL table of
+log-like records is a future UI step, not part of the current demo.
 
 ## Alternatives
 
@@ -36,20 +38,29 @@ Google project and enforce that server-side; ADC alone does not do this.
 
 Every adapter rejects writes. The generic OVDB mount refuses keyed and
 mutating operations. The OVDB public spec and wire shape remain untouched.
-The programmatic mount reports an external engine value through the existing
-metadata string field; compatibility review must establish whether any client
-treats this as a closed enumeration. If it is considered a protocol expansion,
-owner approval is required before release.
+The programmatic mount reports `engine: "external"` through the existing open
+string field in discovery. That value is visible to clients. Independent
+protocol review confirmed that no route, response field, enum or log-specific
+contract changed. The integration test read the existing descriptor by HTTP
+GET and queried the collection with an unmodified OVDB Go client. File
+manifests still reject `external`.
 
-## Local acceptance status
+## Delivery status
 
 - [x] Direct file and Cloud DALGO adapters with bounded queries and unit tests.
 - [x] Generic OVDB read-only mount landed in `openvaultdb/openvaultdb-go` PR #88;
   required CI, remote merge and worktree cleanup were verified by WB.
-- [x] Unmodified OVDB client discovery and query integration test.
-- [x] DataTug log view and explicit order mapping; browser verified record → six logs → selected record.
-- [x] Local Northwind startup script, versioned fixtures, HTML walkthrough and product screenshots.
-- [ ] Hosted per-user Google Cloud connection authorization.
+- [x] Existing OVDB descriptor GET and unmodified client query integration test.
+- [x] DataTug AG Grid log view and explicit order mapping. Two local Playwright
+  tests covered six direct-source entries, log → order route and browser Back.
+  The record → logs link and real order fields were observed in the manual
+  browser journey and captured in the demo screenshots.
+- [x] Local Northwind startup script, versioned fixtures, HTML walkthrough and
+  screenshots of the working AG Grid.
+- [x] Hosted per-user connection code merged in `datatug-cloud` PR #9. It is
+  disabled by default and has no real Google user-grant pilot receipt.
+- [ ] Narrow-view IAM, dedicated OAuth/KMS configuration, cleanup-worker
+  liveness and a real read/revoke pilot before hosted activation.
 - [x] Independent protocol, security, demo and UX review; initialization DDL,
   projection, byte-budget and applied-query identity findings repaired and
   regression-tested. The standalone dependency pin was verified and merged.
@@ -58,6 +69,10 @@ owner approval is required before release.
 - [x] DataTug PR #393 merged at `f9f25caf2b3a57e05571946a0a5e1dadf59c4061`;
   its exact head cleared the CI gate with 13/13 checks settled. WB removed the
   remote branch and cleaned the worktree.
+- [x] AG Grid DataTug PR #398 and demo screenshot PR #55 merged; independent
+  UX/demo and protocol reviews found no remaining blocker. The direct source
+  status is tracked in the
+  [feature specification](../spec/features/direct-log-evidence/README.md).
 
 The existing Context Bag is scoped to an agent, project, environment and
 security context. This local public demo uses a shareable `order=11039` URL
