@@ -9,18 +9,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/logging"
+	logpb "cloud.google.com/go/logging/apiv2/loggingpb"
 	"cloud.google.com/go/logging/logadmin"
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
 	"github.com/dal-go/dalgo/recordset"
 	"github.com/dal-go/record"
 	"google.golang.org/api/iterator"
+	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 )
 
 type Config struct {
@@ -39,6 +42,7 @@ type database struct {
 	dal.NoConcurrency
 	cfg     Config
 	client  *logadmin.Client
+	closeFn func() error
 	entries func(context.Context, string, int) entryReader
 }
 
@@ -46,13 +50,19 @@ type entryReader interface {
 	Next() (*logging.Entry, error)
 }
 
+// sourceEntryReader carries provider fields that the Cloud Logging SDK does not
+// model. They remain part of the canonical raw evidence and source identity.
+type sourceEntryReader interface {
+	NextWithSource() (*logging.Entry, []byte, error)
+}
+
 type cloudHandle struct {
 	dal.DB
 	dbschema.SchemaReader
-	client *logadmin.Client
+	closeFn func() error
 }
 
-func (h *cloudHandle) Close() error { return h.client.Close() }
+func (h *cloudHandle) Close() error { return h.closeFn() }
 
 var _ dal.Backend = (*database)(nil)
 var _ dbschema.SchemaReader = (*database)(nil)
@@ -62,8 +72,24 @@ var projectID = regexp.MustCompile(`^[a-z][a-z0-9-]{4,61}[a-z0-9]$`)
 // logging.logEntries.list on the configured project and enforce user access to
 // this server-side connection before a request reaches the OVDB handler.
 func NewDB(ctx context.Context, cfg Config) (dal.DB, error) {
+	cfg, err := normalizeConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	client, err := logadmin.NewClient(ctx, cfg.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("cloudlogging: create read client: %w", err)
+	}
+	backend := &database{cfg: cfg, client: client, entries: func(ctx context.Context, filter string, limit int) entryReader {
+		return client.Entries(ctx, logadmin.Filter(filter), logadmin.NewestFirst(), logadmin.PageSize(int32(limit)))
+	}}
+	backend.closeFn = client.Close
+	return &cloudHandle{DB: dal.NewDB(backend), SchemaReader: backend, closeFn: client.Close}, nil
+}
+
+func normalizeConfig(cfg Config) (Config, error) {
 	if cfg.ID == "" || cfg.Collection == "" || !projectID.MatchString(cfg.ProjectID) {
-		return nil, errors.New("cloudlogging: ID, Collection and a valid ProjectID are required")
+		return Config{}, errors.New("cloudlogging: ID, Collection and a valid ProjectID are required")
 	}
 	if cfg.MaxResults == 0 {
 		cfg.MaxResults = 200
@@ -75,19 +101,20 @@ func NewDB(ctx context.Context, cfg Config) (dal.DB, error) {
 		cfg.MaxQueryDuration = 30 * time.Second
 	}
 	if cfg.MaxResults < 1 || cfg.MaxResults > 1000 || cfg.MaxWindow < time.Minute || cfg.MaxWindow > 7*24*time.Hour || cfg.MaxQueryDuration < time.Second || cfg.MaxQueryDuration > 5*time.Minute {
-		return nil, errors.New("cloudlogging: limits exceed supported bounds")
+		return Config{}, errors.New("cloudlogging: limits exceed supported bounds")
 	}
-	client, err := logadmin.NewClient(ctx, cfg.ProjectID)
-	if err != nil {
-		return nil, fmt.Errorf("cloudlogging: create read client: %w", err)
-	}
-	backend := &database{cfg: cfg, client: client, entries: func(ctx context.Context, filter string, limit int) entryReader {
-		return client.Entries(ctx, logadmin.Filter(filter), logadmin.NewestFirst(), logadmin.PageSize(int32(limit)))
-	}}
-	return &cloudHandle{DB: dal.NewDB(backend), SchemaReader: backend, client: client}, nil
+	return cfg, nil
 }
 
-func (d *database) Close() error       { return d.client.Close() }
+func (d *database) Close() error {
+	if d.closeFn != nil {
+		return d.closeFn()
+	}
+	if d.client != nil {
+		return d.client.Close()
+	}
+	return nil
+}
 func (d *database) ID() string         { return d.cfg.ID }
 func (*database) Adapter() dal.Adapter { return dal.NewAdapter("dalgo2logs/cloudlogging", "0.1") }
 func (*database) Schema() dal.Schema   { return nil }
@@ -198,7 +225,7 @@ func buildFilter(q dal.StructuredQuery, cfg Config) (string, int, error) {
 				}
 				parts = append(parts, "severity="+value)
 			case "correlation_id", "order_id", "service":
-				if c.Operator != dal.Equal || len(value) > 256 {
+				if c.Operator != dal.Equal || len(value) > 256 || !isASCII(value) {
 					return dal.ErrNotSupported
 				}
 				quoted := strconv.Quote(value)
@@ -243,19 +270,26 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 	defer cancel()
 	it := d.entries(ctx, filter, limit)
 	records := make([]record.Record, 0, limit)
-	resultBytes := 0
+	scanBytes := 0
 	for len(records) < limit {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		e, err := it.Next()
+		var e *logging.Entry
+		var source []byte
+		var err error
+		if sourced, ok := it.(sourceEntryReader); ok {
+			e, source, err = sourced.NextWithSource()
+		} else {
+			e, err = it.Next()
+		}
 		if err == iterator.Done {
 			break
 		}
 		if err != nil {
 			return nil, fmt.Errorf("cloudlogging: list entries failed: %w", err)
 		}
-		row, err := mapEntry(e, d.cfg.ProjectID)
+		row, err := mapEntryWithSource(e, d.cfg.ProjectID, source)
 		if err != nil {
 			return nil, err
 		}
@@ -266,10 +300,17 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 		// Reserve envelope/key overhead for the normal OVDB response in addition
 		// to the complete mapped row, whose payload appears in several fields.
 		entryBytes := len(encoded) + 1024
-		if entryBytes > maxEntryBytes || resultBytes+entryBytes > maxResultBytes {
+		if entryBytes > maxEntryBytes || scanBytes+entryBytes > maxResultBytes {
 			return nil, fmt.Errorf("%w: Cloud Logging result exceeds response byte limit", dal.ErrNotSupported)
 		}
-		resultBytes += entryBytes
+		scanBytes += entryBytes
+		matches, err := matchesQuery(q.Where(), row)
+		if err != nil {
+			return nil, err
+		}
+		if !matches {
+			continue
+		}
 		id := row["source_ref"].(string)
 		if template := q.IntoRecord(); template != nil {
 			if err := record.MapToData(template.Data(), row); err != nil {
@@ -283,7 +324,75 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 	return dal.NewRecordsReader(records), nil
 }
 
+func matchesQuery(condition dal.Condition, row map[string]any) (bool, error) {
+	switch c := condition.(type) {
+	case dal.GroupCondition:
+		if c.Operator() != dal.And {
+			return false, fmt.Errorf("%w: only AND filters are supported", dal.ErrNotSupported)
+		}
+		for _, child := range c.Conditions() {
+			matches, err := matchesQuery(child, row)
+			if err != nil || !matches {
+				return matches, err
+			}
+		}
+		return true, nil
+	case dal.Comparison:
+		field, ok := c.Left.(dal.FieldRef)
+		if !ok {
+			return false, fmt.Errorf("%w: unsupported filter field", dal.ErrNotSupported)
+		}
+		constant, ok := c.Right.(dal.Constant)
+		if !ok {
+			return false, fmt.Errorf("%w: constant filter required", dal.ErrNotSupported)
+		}
+		expected, ok := constant.Value.(string)
+		if !ok {
+			return false, fmt.Errorf("%w: string filter required", dal.ErrNotSupported)
+		}
+		actual, ok := row[field.Name()].(string)
+		if !ok {
+			return false, nil
+		}
+		switch field.Name() {
+		case "timestamp":
+			expectedTime, err := time.Parse(time.RFC3339Nano, expected)
+			if err != nil {
+				return false, fmt.Errorf("%w: RFC3339 timestamp required", dal.ErrNotSupported)
+			}
+			actualTime, err := time.Parse(time.RFC3339Nano, actual)
+			if err != nil {
+				return false, nil
+			}
+			switch c.Operator {
+			case dal.GreaterOrEqual:
+				return !actualTime.Before(expectedTime), nil
+			case dal.LessOrEqual:
+				return !actualTime.After(expectedTime), nil
+			default:
+				return false, fmt.Errorf("%w: use inclusive timestamp bounds", dal.ErrNotSupported)
+			}
+		case "severity", "correlation_id", "order_id", "service":
+			if c.Operator != dal.Equal {
+				return false, fmt.Errorf("%w: equality filter required", dal.ErrNotSupported)
+			}
+			if !isASCII(actual) || !isASCII(expected) {
+				return false, fmt.Errorf("%w: local equality checks require ASCII values", dal.ErrNotSupported)
+			}
+			return strings.EqualFold(actual, expected), nil
+		default:
+			return false, fmt.Errorf("%w: filter is unavailable", dal.ErrNotSupported)
+		}
+	default:
+		return false, fmt.Errorf("%w: condition shape is unavailable", dal.ErrNotSupported)
+	}
+}
+
 func mapEntry(e *logging.Entry, projectID string) (map[string]any, error) {
+	return mapEntryWithSource(e, projectID, nil)
+}
+
+func mapEntryWithSource(e *logging.Entry, projectID string, source []byte) (map[string]any, error) {
 	row := map[string]any{"parse_status": "parsed", "severity": strings.ToUpper(e.Severity.String()), "source": e.LogName, "parser": "google-cloud-logging", "project_id": projectID, "log_name": e.LogName, "insert_id": e.InsertID}
 	if !e.Timestamp.IsZero() {
 		row["timestamp"] = e.Timestamp.UTC().Format(time.RFC3339Nano)
@@ -326,14 +435,83 @@ func mapEntry(e *logging.Entry, projectID string) (map[string]any, error) {
 		return nil, errors.New("cloudlogging: entry labels cannot be encoded")
 	}
 	row["labels_json"] = string(labels)
-	raw, err := json.Marshal(e)
-	if err != nil {
-		return nil, errors.New("cloudlogging: entry cannot be encoded")
+	if len(source) == 0 {
+		var err error
+		source, err = marshalEntry(e)
+		if err != nil {
+			return nil, errors.New("cloudlogging: entry cannot be encoded")
+		}
 	}
-	row["raw"] = string(raw) // canonical SDK reconstruction, not original wire bytes
-	digest := sha256.Sum256(append([]byte(projectID+"\x00"), raw...))
+	row["raw"] = string(source) // canonical provider entry, including REST-only evidence fields
+	digest := sha256.Sum256(append([]byte(projectID+"\x00"), source...))
 	row["source_ref"] = "gcl:" + hex.EncodeToString(digest[:])
 	return row, nil
+}
+
+func isASCII(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// marshalEntry keeps the original SDK encoding when it is supported. Cloud
+// Logging's HTTPRequest contains an http.Request with function fields, so that
+// case uses a stable JSON-safe representation of every evidence field.
+func marshalEntry(e *logging.Entry) ([]byte, error) {
+	raw, err := json.Marshal(e)
+	if err == nil {
+		return raw, nil
+	}
+	var request *canonicalHTTPRequest
+	if h := e.HTTPRequest; h != nil {
+		request = &canonicalHTTPRequest{
+			RequestSize: h.RequestSize, Status: h.Status, ResponseSize: h.ResponseSize,
+			Latency: h.Latency.String(), LocalIP: h.LocalIP, RemoteIP: h.RemoteIP,
+			CacheHit: h.CacheHit, CacheValidatedWithOriginServer: h.CacheValidatedWithOriginServer,
+			CacheFillBytes: h.CacheFillBytes, CacheLookup: h.CacheLookup,
+		}
+		if h.Request != nil {
+			request.Method = h.Request.Method
+			request.URL = h.Request.URL.String()
+			request.Proto = h.Request.Proto
+			request.Header = h.Request.Header
+		}
+	}
+	return json.Marshal(struct {
+		Timestamp      time.Time                     `json:"Timestamp"`
+		Severity       logging.Severity              `json:"Severity"`
+		Payload        any                           `json:"Payload"`
+		Labels         map[string]string             `json:"Labels"`
+		InsertID       string                        `json:"InsertID"`
+		HTTPRequest    *canonicalHTTPRequest         `json:"HTTPRequest,omitempty"`
+		Operation      *logpb.LogEntryOperation      `json:"Operation,omitempty"`
+		LogName        string                        `json:"LogName"`
+		Resource       *mrpb.MonitoredResource       `json:"Resource,omitempty"`
+		Trace          string                        `json:"Trace"`
+		SpanID         string                        `json:"SpanID"`
+		TraceSampled   bool                          `json:"TraceSampled"`
+		SourceLocation *logpb.LogEntrySourceLocation `json:"SourceLocation,omitempty"`
+	}{e.Timestamp, e.Severity, e.Payload, e.Labels, e.InsertID, request, e.Operation, e.LogName, e.Resource, e.Trace, e.SpanID, e.TraceSampled, e.SourceLocation})
+}
+
+type canonicalHTTPRequest struct {
+	Method                         string      `json:"Method,omitempty"`
+	URL                            string      `json:"URL,omitempty"`
+	Proto                          string      `json:"Proto,omitempty"`
+	Header                         http.Header `json:"Header,omitempty"`
+	RequestSize                    int64       `json:"RequestSize"`
+	Status                         int         `json:"Status"`
+	ResponseSize                   int64       `json:"ResponseSize"`
+	Latency                        string      `json:"Latency"`
+	LocalIP                        string      `json:"LocalIP,omitempty"`
+	RemoteIP                       string      `json:"RemoteIP,omitempty"`
+	CacheHit                       bool        `json:"CacheHit"`
+	CacheValidatedWithOriginServer bool        `json:"CacheValidatedWithOriginServer"`
+	CacheFillBytes                 int64       `json:"CacheFillBytes"`
+	CacheLookup                    bool        `json:"CacheLookup"`
 }
 
 func (d *database) ListCollections(context.Context, *record.Key) ([]dal.CollectionRef, error) {
