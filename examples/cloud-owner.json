@@ -1,0 +1,13 @@
+{
+  "listen": "127.0.0.1:6832",
+  "sources": {
+    "corsOrigins": ["http://127.0.0.1:4200"],
+    "cloud": [
+      {
+        "ID": "my_cloud_evidence",
+        "ProjectID": "replace-with-your-project-id",
+        "Collection": "entries"
+      }
+    ]
+  }
+}
