@@ -41,9 +41,11 @@ The adapter accepts equality on severity, service, order_id and
 correlation_id. Identifier predicates check matching JSON payload and labels;
 correlation_id also checks the provider trace field and service checks the
 monitored resource service_name label. Google Cloud's string equality is case
-insensitive. The displayed common field prefers payload, then entry labels,
-then provider trace/resource metadata. Separate trace_id, labels_json and
-fields_json expose differing values. Project selection is never a query input.
+insensitive. For service, the displayed common field prefers payload, then
+the monitored resource service name, then entry labels. Correlation prefers
+payload, then entry labels, then the provider trace field. Separate trace_id,
+labels_json and fields_json expose differing values. Project selection is
+never a query input.
 
 Cloud raw is a JSON reconstruction from the SDK entry, not original wire
 bytes. A gcl: SHA-256 source_ref hashes the project and reconstructed entry.
