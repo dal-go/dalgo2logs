@@ -78,7 +78,7 @@ No timestamp is invented. See docs/architecture.md for the design decision.
 
 The [operator and security notes](docs/operations.md) include the local
 Google Cloud Logging setup, byte limits, troubleshooting and measured file
-scan cost. The [demo guide](https://github.com/datatug/datatug-demo-project/blob/main/demo-project-1/fixtures/logs/guide.md)
+scan cost. The [demo guide](https://github.com/datatug/datatug-demo-project/blob/main/docs/logs/guide.md)
 starts the full Northwind investigation.
 
 Run the local tests with:
