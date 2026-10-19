@@ -1,10 +1,12 @@
 package cloudlogging
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -119,6 +121,10 @@ func (r *personalEntryReader) NextWithSource() (*logging.Entry, []byte, error) {
 			if err != nil {
 				return nil, nil, errors.New("cloudlogging: REST log entry cannot be encoded")
 			}
+			source, err = canonicalizeJSON(source)
+			if err != nil {
+				return nil, nil, errors.New("cloudlogging: REST log entry cannot be canonicalized")
+			}
 			return mapped, source, nil
 		}
 		if r.done {
@@ -145,6 +151,23 @@ func (r *personalEntryReader) NextWithSource() (*logging.Entry, []byte, error) {
 			return nil, nil, iterator.Done
 		}
 	}
+}
+
+func canonicalizeJSON(source []byte) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(source))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("cloudlogging: multiple JSON values")
+		}
+		return nil, err
+	}
+	return json.Marshal(value)
 }
 
 func convertPersonalEntry(e *loggingv2.LogEntry) (*logging.Entry, error) {

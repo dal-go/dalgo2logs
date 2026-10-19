@@ -22,8 +22,6 @@ import (
 	"github.com/dal-go/dalgo/dbschema"
 	"github.com/dal-go/dalgo/recordset"
 	"github.com/dal-go/record"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/unicode/norm"
 	"google.golang.org/api/iterator"
 	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 )
@@ -227,7 +225,7 @@ func buildFilter(q dal.StructuredQuery, cfg Config) (string, int, error) {
 				}
 				parts = append(parts, "severity="+value)
 			case "correlation_id", "order_id", "service":
-				if c.Operator != dal.Equal || len(value) > 256 {
+				if c.Operator != dal.Equal || len(value) > 256 || !isASCII(value) {
 					return dal.ErrNotSupported
 				}
 				quoted := strconv.Quote(value)
@@ -378,7 +376,10 @@ func matchesQuery(condition dal.Condition, row map[string]any) (bool, error) {
 			if c.Operator != dal.Equal {
 				return false, fmt.Errorf("%w: equality filter required", dal.ErrNotSupported)
 			}
-			return cloudLoggingEqual(actual, expected), nil
+			if !isASCII(actual) || !isASCII(expected) {
+				return false, fmt.Errorf("%w: local equality checks require ASCII values", dal.ErrNotSupported)
+			}
+			return strings.EqualFold(actual, expected), nil
 		default:
 			return false, fmt.Errorf("%w: filter is unavailable", dal.ErrNotSupported)
 		}
@@ -447,15 +448,13 @@ func mapEntryWithSource(e *logging.Entry, projectID string, source []byte) (map[
 	return row, nil
 }
 
-// cloudLoggingEqual mirrors Cloud Logging's case-insensitive NFKC case-fold
-// comparison for '='. NFKC both before and after folding handles compatibility
-// characters and canonically equivalent sequences.
-func cloudLoggingEqual(a, b string) bool {
-	folder := cases.Fold()
-	fold := func(s string) string {
-		return norm.NFKC.String(folder.String(norm.NFKC.String(s)))
+func isASCII(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] >= 0x80 {
+			return false
+		}
 	}
-	return fold(a) == fold(b)
+	return true
 }
 
 // marshalEntry keeps the original SDK encoding when it is supported. Cloud

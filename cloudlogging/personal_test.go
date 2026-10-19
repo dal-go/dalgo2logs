@@ -243,6 +243,42 @@ func TestPersonalRawEvidenceIncludesRESTOnlyFields(t *testing.T) {
 	}
 }
 
+func TestCanonicalRESTJSONSortsNestedKeysAndPreservesLargeNumbers(t *testing.T) {
+	first, err := canonicalizeJSON([]byte(`{"jsonPayload":{"z":9007199254740993,"a":1},"otel":{"z":true,"a":false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := canonicalizeJSON([]byte(`{"otel":{"a":false,"z":true},"jsonPayload":{"a":1,"z":9007199254740993}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("nested object key order changed canonical bytes:\n%s\n%s", first, second)
+	}
+	entry := &logging.Entry{Payload: map[string]any{"message": "same mapped data"}}
+	row1, err := mapEntryWithSource(entry, "demo-project", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row2, err := mapEntryWithSource(entry, "demo-project", second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row1["source_ref"] != row2["source_ref"] {
+		t.Fatal("equivalent REST JSON produced different source references")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(first)))
+	decoder.UseNumber()
+	var raw map[string]any
+	if err := decoder.Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	value := raw["jsonPayload"].(map[string]any)["z"]
+	if value != json.Number("9007199254740993") {
+		t.Fatalf("large integer = %#v, want exact JSON number", value)
+	}
+}
+
 func TestPersonalQueryCancellationStopsTokenRefresh(t *testing.T) {
 	started := make(chan struct{})
 	provider := tokenProviderFunc(func(ctx context.Context) (*auth.Token, error) {
