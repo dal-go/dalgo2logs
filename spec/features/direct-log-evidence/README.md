@@ -43,20 +43,31 @@ type. An ordinary OVDB client discovers and queries the collection using its
 existing capabilities and query endpoints. File manifests still reject
 `external`; the mount is programmatic and read-only.
 
-## Delivery status (2026-10-19)
+## Delivery status (updated 2026-10-20)
 
 | Slice | Receipt | State |
 | --- | --- | --- |
-| JSONL and multiline text, bounded read-only DALGO adapters, delegated Cloud Logging reader | [`dalgo2logs` main](https://github.com/dal-go/dalgo2logs/tree/62c8d1efd058915c82fc726cd8ce201aa602faeb) | Merged; direct reads, no log database or snapshot |
+| JSONL and multiline text, bounded read-only DALGO adapters, delegated Cloud Logging reader | [`dalgo2logs` PR #12](https://github.com/dal-go/dalgo2logs/pull/12) | Merged; direct reads preserve raw evidence and references without a log database or snapshot |
 | Generic programmatic OVDB mount | [`openvaultdb-go` PR #88](https://github.com/openvaultdb/openvaultdb-go/pull/88) | Merged; no new route, field or log-specific protocol semantics |
-| Local AG Grid evidence and record return | [`datatug-apps` PR #398](https://github.com/datatug/datatug-apps/pull/398) | Merged; two local Playwright tests passed against the real file adapter and unchanged OVDB endpoints |
-| Reproducible synthetic Northwind evidence and HTML | [`datatug-demo-project` PR #55](https://github.com/datatug/datatug-demo-project/pull/55) | Merged; six related events, raw evidence and real AG Grid screenshots |
-| Hosted personal Cloud Logging | [`datatug-cloud` PR #9](https://github.com/datatug/datatug-cloud/pull/9) | Host code merged but disabled; real consent, narrow-view IAM, Cloud Run cleanup liveness and read/revoke pilot remain open |
+| DataTug evidence UI | [`datatug-apps` PRs #398 and #415](https://github.com/datatug/datatug-apps/pull/415) | Merged; local evidence rows use the real file adapter and unchanged OVDB endpoints; hosted connection/query UI remains behind the verified-UID gate |
+| Reproducible synthetic Northwind evidence and hosted pilot guide | [`datatug-demo-project` PRs #55, #62, #63 and #64](https://github.com/datatug/datatug-demo-project/pull/64) | Merged; local fixture includes six related synthetic events, raw evidence, and real AG Grid captures; the guide records the separate production Google pilot |
+| Hosted personal Cloud Logging | [`datatug-cloud` PR #25](https://github.com/datatug/datatug-cloud/pull/25); [DataTug feature PR #184](https://github.com/datatug/datatug/pull/184) | Merged; opt-in hosted service is configured in existing project `sneat-eur3-1`. The owner consented to `openid email logging.read` with offline access and queried the dedicated synthetic view. The broader `_Default/_AllLogs` view probe returned 403. Removing and reconnecting the synthetic view succeeded without new Google consent; a clean-tab query at 15:06 UTC returned six rows in the actual AG Grid. |
 
-The local scenario is reproducible without AI. The hosted browser test uses
-emulators and synthetic API responses; it does not establish access to a real
-user's Google Cloud logs. Persistent Detective cases and general field mapping
-for existing database log tables are not delivered by this slice.
+The hosted pilot uses the existing `sneat-eur3-1` project with a dedicated OAuth
+client, KMS key, and `roles/logging.viewAccessor` binding on the synthetic
+view; a separate disposable project is not required for this pilot. The
+production OAuth consent screen remains unverified, with verification and its
+project-wide usage cap to resolve before broader rollout. The later clean-tab
+query used the retained grant and view, but Google grant expiry and refresh
+behavior are unverified, and Google-wide disconnect/revocation has not been
+performed. See the [hosted pilot receipt](https://github.com/datatug/datatug-demo-project/blob/main/docs/logs/google-cloud-pilot.md)
+for the bounded query, remove/reconnect, access-denial, and re-entry evidence.
+
+The automated hosted browser tests use emulators and synthetic API responses;
+they remain separate from the live consent and production Google query above.
+The local scenario is reproducible without AI. No log entries are ingested into
+a database or snapshot. Hosted log-to-record navigation, persistent Detective
+cases, and general field mapping for existing database log tables remain open.
 
 ## Acceptance Criteria
 
@@ -81,13 +92,17 @@ for existing database log tables are not delivered by this slice.
 
 ## Open Questions
 
-- The hosted per-user authorization design and disabled implementation are
-  recorded in the [DataTug feature](https://github.com/datatug/datatug/blob/main/spec/features/hosted-google-cloud-log-evidence/README.md).
-  A disposable nonproduction project, narrow view, dedicated OAuth/KMS/IAM and
-  a real read/revoke pilot are still needed before activation.
-- Detective case persistence is not established. For now the shareable
-  route, fixture revision, saved query and evidence references reconstruct
-  the investigation; a durable case is separate follow-up work.
+- Before broader rollout, resolve Google OAuth verification and project-cap
+  requirements, establish expiry/refresh and disconnect/revocation behavior,
+  and confirm billing/quota bounds. The live pilot verifies a bounded read of
+  its synthetic view, not Google-wide revocation or refresh-token behavior.
+- Hosted log-to-record navigation remains incomplete. The local file scenario
+  pairs real order 11039 with synthetic logs and does not claim historical
+  causation.
+- Detective case persistence is not established. For now the shareable route,
+  fixture revision, saved query and evidence references reconstruct the
+  investigation; a durable case is separate follow-up work.
+- General field mapping for existing database log tables remains open.
 
 ---
 *This document follows the https://specscore.md/feature-specification*
