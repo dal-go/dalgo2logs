@@ -75,11 +75,11 @@ arbitrary SQL, joins, offsets, aggregation and all writes return
 dal.ErrNotSupported. Missing timestamps remain absent, invalid timestamps
 are marked invalid_timestamp, and malformed entries retain their raw content.
 No timestamp is invented. File queries accept at most 16 comparisons, 16
-nested AND groups, and 64 visited condition nodes. Each encountered comparison
-or AND group counts as one node, including empty groups; exceeding any limit
-returns dal.ErrNotSupported before reading the source. A pre-canceled query
-returns its context error before query planning. See docs/architecture.md for
-the design decision.
+nested AND groups, and 64 planner visits. Each planner invocation counts,
+including nil children and AND groups (including empty groups); exceeding any
+limit returns dal.ErrNotSupported before reading the source. A pre-canceled
+query returns its context error before query planning. See docs/architecture.md
+for the design decision.
 
 The [operator and security notes](docs/operations.md) include the local
 Google Cloud Logging setup, byte limits, troubleshooting and measured file

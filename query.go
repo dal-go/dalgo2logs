@@ -140,12 +140,12 @@ type filterBudget struct {
 }
 
 func (b *filterBudget) plan(cond dal.Condition, andDepth int) ([]predicate, error) {
-	if cond == nil {
-		return nil, nil
-	}
 	b.conditionNodes++
 	if b.conditionNodes > maxConditionNodes {
 		return nil, fmt.Errorf("%w: too many filter condition nodes", dal.ErrNotSupported)
+	}
+	if cond == nil {
+		return nil, nil
 	}
 	switch c := cond.(type) {
 	case dal.GroupCondition:

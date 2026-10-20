@@ -225,11 +225,21 @@ func TestFileQueryConditionBudgets(t *testing.T) {
 	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), query(wideEmptyGroups(maxConditionNodes))); err != nil {
 		t.Fatalf("condition node count %d: %v", maxConditionNodes, err)
 	}
+
+	wideNilChildren := func(childCount int) dal.Condition {
+		return dal.NewGroupCondition(dal.And, make([]dal.Condition, childCount)...)
+	}
+	if got := len(rows(t, db, query(wideNilChildren(maxConditionNodes-1)))); got != 1 {
+		t.Fatalf("root plus %d nil children returned %d rows", maxConditionNodes-1, got)
+	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), query(wideEmptyGroups(maxConditionNodes+1))); !errors.Is(err, dal.ErrNotSupported) {
 		t.Fatalf("condition node count %d: got %v, want dal.ErrNotSupported before file access", maxConditionNodes+1, err)
+	}
+	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), query(wideNilChildren(maxConditionNodes))); !errors.Is(err, dal.ErrNotSupported) {
+		t.Fatalf("root plus %d nil children: got %v, want dal.ErrNotSupported before file access", maxConditionNodes, err)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())

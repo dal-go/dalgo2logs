@@ -64,11 +64,12 @@ for existing database log tables are not delivered by this slice.
   client discovers and queries the collection through existing routes.
 - Every file query enforces a trusted root, entry/file/result caps and
   cancellation. File query planning accepts at most 16 comparisons, 16 nested
-  AND groups and 64 visited condition nodes (comparison and group nodes count,
-  including empty groups); exceeding a limit returns `dal.ErrNotSupported`
-  before file access. A pre-canceled query returns its context error before
-  planning. Cloud queries enforce project, time window, result and duration
-  bounds. No log entry is ingested into a database.
+  AND groups and 64 planner visits. Each planner invocation counts, including
+  nil children and AND groups (including empty groups); exceeding a limit
+  returns `dal.ErrNotSupported` before file access. A pre-canceled query
+  returns its context error before planning. Cloud queries enforce project,
+  time window, result and duration bounds. No log entry is ingested into a
+  database.
 - Unsupported query shapes and writes fail explicitly. Missing and malformed
   timestamps remain visible without fabricated values.
 - DataTug opens order 11039, follows its explicit order_id mapping to
