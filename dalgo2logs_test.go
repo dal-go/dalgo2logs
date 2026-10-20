@@ -184,6 +184,61 @@ func TestSecurityBoundsAndUnsupported(t *testing.T) {
 	}
 }
 
+func TestFileQueryConditionBudgets(t *testing.T) {
+	db, path := fixture(t, JSONL, `{"timestamp":"2026-10-19T03:00:00Z","order_id":"11039"}`+"\n")
+
+	comparisons := func(count int) []dal.Condition {
+		conditions := make([]dal.Condition, count)
+		for i := range conditions {
+			conditions[i] = dal.WhereField("order_id", dal.Equal, "11039")
+		}
+		return conditions
+	}
+	if got := len(rows(t, db, query(comparisons(maxFilterComparisons)...))); got != 1 {
+		t.Fatalf("query with %d comparisons returned %d rows", maxFilterComparisons, got)
+	}
+	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), query(comparisons(maxFilterComparisons+1)...)); !errors.Is(err, dal.ErrNotSupported) {
+		t.Fatalf("query with %d comparisons: got %v, want dal.ErrNotSupported", maxFilterComparisons+1, err)
+	}
+
+	nestedAnd := func(depth int) dal.Condition {
+		var condition dal.Condition = dal.NewGroupCondition(dal.And)
+		for i := 1; i < depth; i++ {
+			condition = dal.NewGroupCondition(dal.And, condition)
+		}
+		return condition
+	}
+	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), query(nestedAnd(maxAndNestingDepth))); err != nil {
+		t.Fatalf("AND depth %d: %v", maxAndNestingDepth, err)
+	}
+	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), query(nestedAnd(maxAndNestingDepth+1))); !errors.Is(err, dal.ErrNotSupported) {
+		t.Fatalf("AND depth %d: got %v, want dal.ErrNotSupported", maxAndNestingDepth+1, err)
+	}
+
+	wideEmptyGroups := func(nodeCount int) dal.Condition {
+		children := make([]dal.Condition, nodeCount-1)
+		for i := range children {
+			children[i] = dal.NewGroupCondition(dal.And)
+		}
+		return dal.NewGroupCondition(dal.And, children...)
+	}
+	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), query(wideEmptyGroups(maxConditionNodes))); err != nil {
+		t.Fatalf("condition node count %d: %v", maxConditionNodes, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), query(wideEmptyGroups(maxConditionNodes+1))); !errors.Is(err, dal.ErrNotSupported) {
+		t.Fatalf("condition node count %d: got %v, want dal.ErrNotSupported before file access", maxConditionNodes+1, err)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := db.ExecuteQueryToRecordsReader(canceled, query(comparisons(maxFilterComparisons+1)...)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-canceled over-budget query: got %v, want context.Canceled", err)
+	}
+}
+
 func TestSchemaDiscovery(t *testing.T) {
 	db, _ := fixture(t, JSONL, "{}\n")
 	refs, err := dbschema.ListCollections(context.Background(), db, nil)
