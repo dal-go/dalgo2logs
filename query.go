@@ -17,7 +17,16 @@ type predicate struct {
 	value string
 }
 
+const (
+	maxFilterComparisons = 16
+	maxAndNestingDepth   = 16
+	maxConditionNodes    = 64
+)
+
 func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Query) (dal.RecordsReader, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	q, ok := query.(dal.StructuredQuery)
 	if !ok {
 		return nil, fmt.Errorf("%w: structured queries only", dal.ErrNotSupported)
@@ -121,6 +130,20 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 }
 
 func planFilters(cond dal.Condition) ([]predicate, error) {
+	var budget filterBudget
+	return budget.plan(cond, 0)
+}
+
+type filterBudget struct {
+	conditionNodes int
+	comparisons    int
+}
+
+func (b *filterBudget) plan(cond dal.Condition, andDepth int) ([]predicate, error) {
+	b.conditionNodes++
+	if b.conditionNodes > maxConditionNodes {
+		return nil, fmt.Errorf("%w: too many filter condition nodes", dal.ErrNotSupported)
+	}
 	if cond == nil {
 		return nil, nil
 	}
@@ -129,9 +152,13 @@ func planFilters(cond dal.Condition) ([]predicate, error) {
 		if c.Operator() != dal.And {
 			return nil, fmt.Errorf("%w: only AND filters are supported", dal.ErrNotSupported)
 		}
+		andDepth++
+		if andDepth > maxAndNestingDepth {
+			return nil, fmt.Errorf("%w: filter AND nesting is too deep", dal.ErrNotSupported)
+		}
 		var out []predicate
 		for _, child := range c.Conditions() {
-			p, err := planFilters(child)
+			p, err := b.plan(child, andDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -139,6 +166,10 @@ func planFilters(cond dal.Condition) ([]predicate, error) {
 		}
 		return out, nil
 	case dal.Comparison:
+		b.comparisons++
+		if b.comparisons > maxFilterComparisons {
+			return nil, fmt.Errorf("%w: too many filter comparisons", dal.ErrNotSupported)
+		}
 		field, ok := c.Left.(dal.FieldRef)
 		if !ok || field.Source() != "" {
 			return nil, fmt.Errorf("%w: filter must name a source field", dal.ErrNotSupported)
