@@ -33,14 +33,22 @@ func TestUnmodifiedOVDBClientDiscoversAndQueriesDirectFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer func() {
+		if err := svc.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	httpSrv := httptest.NewServer(svc.Handler)
 	defer httpSrv.Close()
 	resp, err := http.Get(httpSrv.URL + "/v1/databases/evidence")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("discovery status: %d", resp.StatusCode)
 	}
@@ -65,7 +73,11 @@ func TestUnmodifiedOVDBClientDiscoversAndQueriesDirectFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	rec, err := reader.Next()
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +107,11 @@ func TestOwnerTokenProtectsDirectSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer func() {
+		if err := svc.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	server := httptest.NewServer(svc.Handler)
 	defer server.Close()
 	request, err := http.NewRequest(http.MethodGet, server.URL+"/v1/databases/evidence", nil)
@@ -106,7 +122,9 @@ func TestOwnerTokenProtectsDirectSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.Body.Close()
+	if err := response.Body.Close(); err != nil {
+		t.Error(err)
+	}
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("without token: %d", response.StatusCode)
 	}
@@ -115,7 +133,9 @@ func TestOwnerTokenProtectsDirectSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.Body.Close()
+	if err := response.Body.Close(); err != nil {
+		t.Error(err)
+	}
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("with token: %d", response.StatusCode)
 	}

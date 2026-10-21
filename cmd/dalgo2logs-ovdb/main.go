@@ -32,7 +32,7 @@ func main() {
 	}
 }
 
-func run(path string) error {
+func run(path string) (resultErr error) {
 	if path == "" {
 		return errors.New("--config is required")
 	}
@@ -40,7 +40,11 @@ func run(path string) error {
 	if err != nil {
 		return errors.New("configuration is unavailable")
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, errors.New("configuration close failed"))
+		}
+	}()
 	decoder := json.NewDecoder(f)
 	decoder.DisallowUnknownFields()
 	var cfg fileConfig
@@ -67,12 +71,18 @@ func run(path string) error {
 	if err != nil {
 		return err
 	}
-	defer service.Close()
+	defer func() {
+		resultErr = errors.Join(resultErr, service.Close())
+	}()
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return err
 	}
-	defer listener.Close()
+	defer func() {
+		if closeErr := listener.Close(); !errors.Is(closeErr, net.ErrClosed) {
+			resultErr = errors.Join(resultErr, closeErr)
+		}
+	}()
 	httpServer := &http.Server{Handler: service.Handler, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {
 		<-ctx.Done()

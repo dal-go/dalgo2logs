@@ -188,12 +188,16 @@ func TestTimestampFieldConfigurationAndIndependentSources(t *testing.T) {
 	}
 	for _, field := range []string{"1time", "occurred.at", "/occurred_at", "time[0]", " timestamp", "timestamp ", "a\nb", "a\x00b", "é", strings.Repeat("a", 129)} {
 		if db, err := open(JSONL, field); err == nil {
-			db.(interface{ Close() error }).Close()
+			if err := db.(interface{ Close() error }).Close(); err != nil {
+				t.Error(err)
+			}
 			t.Fatalf("accepted invalid configured field %q", field)
 		}
 	}
 	if db, err := open(Text, "occurred_at"); err == nil {
-		db.(interface{ Close() error }).Close()
+		if err := db.(interface{ Close() error }).Close(); err != nil {
+			t.Error(err)
+		}
 		t.Fatal("Text mapping silently ignored")
 	}
 	for _, tc := range []struct {
@@ -216,7 +220,11 @@ func TestTimestampFieldConfigurationAndIndependentSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.(interface{ Close() error }).Close()
+	defer func() {
+		if err := db.(interface{ Close() error }).Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	for collection, want := range map[string]string{"occurred": "2026-10-21T00:00:00Z", "event": "2026-10-22T00:00:00Z", "legacy": "2026-10-23T00:00:00Z"} {
 		q := dal.From(dal.NewRootCollectionRef(collection, "")).NewQuery().SelectIntoRecord(nil)
 		got := rows(t, db, q)
@@ -243,7 +251,11 @@ func TestTimestampFieldPreservesScanLimits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.(interface{ Close() error }).Close()
+			defer func() {
+				if err := db.(interface{ Close() error }).Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			if _, err := db.ExecuteQueryToRecordsReader(context.Background(), query(dal.WhereField("order_id", dal.Equal, "11045"))); err == nil {
 				t.Fatal("mapping/filter bypassed scanned bound")
 			}

@@ -36,7 +36,11 @@ func rows(t *testing.T, db dal.DB, q dal.StructuredQuery) []record.Record {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() {
+		if err := r.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	var out []record.Record
 	for {
 		rec, err := r.Next()

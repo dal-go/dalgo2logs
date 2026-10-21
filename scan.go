@@ -30,7 +30,7 @@ type entry struct {
 var textHead = regexp.MustCompile(`^(\S+)\s+(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\s+([A-Za-z0-9_.-]+)\s+(.*)$`)
 var kvToken = regexp.MustCompile(`(?:^|\s)(correlation_id|trace_id|order_id)=([^\s]+)`)
 
-func (d *database) scan(ctx context.Context, s source, keep func(map[string]any) bool, postReferenceFilter bool) ([]row, error) {
+func (d *database) scan(ctx context.Context, s source, keep func(map[string]any) bool, postReferenceFilter bool) (_ []row, resultErr error) {
 	if err := noSymlink(s.path); err != nil {
 		return nil, errors.New("dalgo2logs: source path is no longer allowed")
 	}
@@ -38,7 +38,11 @@ func (d *database) scan(ctx context.Context, s source, keep func(map[string]any)
 	if err != nil {
 		return nil, errors.New("dalgo2logs: source is unavailable")
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, errors.New("dalgo2logs: source close failed"))
+		}
+	}()
 	before, err := f.Stat()
 	if err != nil || !before.Mode().IsRegular() || before.Size() > d.cfg.MaxFileBytes {
 		return nil, errors.New("dalgo2logs: source is not a bounded regular file")

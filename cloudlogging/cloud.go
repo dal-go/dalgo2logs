@@ -536,13 +536,39 @@ func isASCII(value string) bool {
 	return true
 }
 
-// marshalEntry keeps the original SDK encoding when it is supported. Cloud
-// Logging's HTTPRequest contains an http.Request with function fields, so that
-// case uses a stable JSON-safe representation of every evidence field.
+// marshalEntry preserves the SDK's successful JSON bytes without asking JSON to
+// encode http.Request's unsupported function fields. A populated request keeps
+// the existing canonical HTTP evidence projection, not the SDK write conversion.
 func marshalEntry(e *logging.Entry) ([]byte, error) {
-	raw, err := json.Marshal(e)
-	if err == nil {
-		return raw, nil
+	if e.HTTPRequest == nil || e.HTTPRequest.Request == nil {
+		var request *sdkHTTPRequestJSON
+		if h := e.HTTPRequest; h != nil {
+			request = &sdkHTTPRequestJSON{
+				RequestSize: h.RequestSize, Status: h.Status, ResponseSize: h.ResponseSize,
+				Latency: h.Latency, LocalIP: h.LocalIP, RemoteIP: h.RemoteIP,
+				CacheHit: h.CacheHit, CacheValidatedWithOriginServer: h.CacheValidatedWithOriginServer,
+				CacheFillBytes: h.CacheFillBytes, CacheLookup: h.CacheLookup,
+			}
+		}
+		// Field order and nulls match logging.Entry at the pinned SDK version.
+		return json.Marshal(struct {
+			Timestamp      time.Time
+			Severity       logging.Severity
+			Payload        any
+			Labels         map[string]string
+			InsertID       string
+			HTTPRequest    *sdkHTTPRequestJSON
+			Operation      *logpb.LogEntryOperation
+			LogName        string
+			Resource       *mrpb.MonitoredResource
+			Trace          string
+			SpanID         string
+			TraceSampled   bool
+			SourceLocation *logpb.LogEntrySourceLocation
+		}{e.Timestamp, e.Severity, e.Payload, e.Labels, e.InsertID, request, e.Operation, e.LogName, e.Resource, e.Trace, e.SpanID, e.TraceSampled, e.SourceLocation})
+	}
+	if e.HTTPRequest.Request.URL == nil {
+		return nil, errors.New("cloudlogging: HTTP request URL is missing")
 	}
 	var request *canonicalHTTPRequest
 	if h := e.HTTPRequest; h != nil {
@@ -574,6 +600,22 @@ func marshalEntry(e *logging.Entry) ([]byte, error) {
 		TraceSampled   bool                          `json:"TraceSampled"`
 		SourceLocation *logpb.LogEntrySourceLocation `json:"SourceLocation,omitempty"`
 	}{e.Timestamp, e.Severity, e.Payload, e.Labels, e.InsertID, request, e.Operation, e.LogName, e.Resource, e.Trace, e.SpanID, e.TraceSampled, e.SourceLocation})
+}
+
+// sdkHTTPRequestJSON is the SDK HTTPRequest encoding when Request is nil. The
+// placeholder retains its JSON null without exposing http.Request functions.
+type sdkHTTPRequestJSON struct {
+	Request                        *struct{}
+	RequestSize                    int64
+	Status                         int
+	ResponseSize                   int64
+	Latency                        time.Duration
+	LocalIP                        string
+	RemoteIP                       string
+	CacheHit                       bool
+	CacheValidatedWithOriginServer bool
+	CacheFillBytes                 int64
+	CacheLookup                    bool
 }
 
 type canonicalHTTPRequest struct {

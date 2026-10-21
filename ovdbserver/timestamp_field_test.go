@@ -53,13 +53,21 @@ func TestTimestampFieldUnmodifiedOVDBClientReadsActualFileWithoutListener(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer service.Close()
+	defer func() {
+		if err := service.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	httpClient := &http.Client{Transport: timestampHandlerTransport{handler: service.Handler}}
 	response, err := httpClient.Get("https://direct-log.test/v1/databases/shipping")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	var descriptor struct {
 		Collections  []string        `json:"collections"`
 		Capabilities map[string]bool `json:"capabilities"`
@@ -83,7 +91,11 @@ func TestTimestampFieldUnmodifiedOVDBClientReadsActualFileWithoutListener(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	rec, err := reader.Next()
 	if err != nil {
 		t.Fatal(err)
