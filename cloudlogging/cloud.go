@@ -114,7 +114,7 @@ func NewDB(ctx context.Context, cfg Config) (dal.DB, error) {
 		return nil, fmt.Errorf("cloudlogging: create read client: %w", err)
 	}
 	backend := &database{cfg: cfg, client: client, entries: func(ctx context.Context, filter string, limit int) entryReader {
-		return client.Entries(ctx, logadmin.Filter(filter), logadmin.NewestFirst(), logadmin.PageSize(int32(limit)))
+		return client.Entries(ctx, logadmin.Filter(filter), logadmin.NewestFirst(), logadmin.PageSize(int32(limit))) // #nosec G115 -- normalizeConfig caps MaxResults at 1000; buildFilter admits only 1..MaxResults before this call.
 	}}
 	backend.closeFn = client.Close
 	return &cloudHandle{DB: dal.NewDB(backend), SchemaReader: backend, closeFn: client.Close}, nil

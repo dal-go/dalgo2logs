@@ -36,7 +36,7 @@ func run(path string) (resultErr error) {
 	if path == "" {
 		return errors.New("--config is required")
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- path is the trusted operator-supplied --config filename, never an HTTP/query input.
 	if err != nil {
 		return errors.New("configuration is unavailable")
 	}
