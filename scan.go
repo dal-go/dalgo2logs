@@ -94,7 +94,7 @@ func (d *database) scan(ctx context.Context, s source, keep func(map[string]any)
 			if entryCount > d.cfg.MaxEntries {
 				return nil, errors.New("dalgo2logs: entry limit exceeded")
 			}
-			data := parseJSONL(chunk)
+			data := parseJSONL(chunk, s.TimestampField)
 			if keep == nil || postReferenceFilter || keep(data) {
 				entries = append(entries, entry{raw: bytes.Clone(chunk), start: start, end: offset, first: line, last: line, data: data})
 			}
@@ -151,7 +151,7 @@ func (d *database) scan(ctx context.Context, s source, keep func(map[string]any)
 	return rows, nil
 }
 
-func parseJSONL(raw []byte) map[string]any {
+func parseJSONL(raw []byte, timestampField string) map[string]any {
 	var obj map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
@@ -175,14 +175,23 @@ func parseJSONL(raw []byte) map[string]any {
 	copyValue("service", "service")
 	copyValue("correlation_id", "correlation_id", "trace_id")
 	copyValue("order_id", "order_id", "orderId")
-	stamp := ""
-	for _, key := range []string{"timestamp", "time"} {
+	stamp, found := "", false
+	keys := []string{"timestamp", "time"}
+	if timestampField != "" {
+		keys = []string{timestampField}
+	}
+	for _, key := range keys {
 		if v, ok := obj[key]; ok && v != nil {
-			stamp = fmt.Sprint(v)
+			found = true
+			if timestampField == "" {
+				stamp = fmt.Sprint(v)
+			} else {
+				stamp, _ = v.(string)
+			}
 			break
 		}
 	}
-	if stamp == "" {
+	if !found || stamp == "" && timestampField == "" {
 		data["parse_status"] = "missing_timestamp"
 	} else if t, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
 		data["timestamp"] = t.UTC().Format(time.RFC3339Nano)
