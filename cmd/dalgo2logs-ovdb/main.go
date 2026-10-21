@@ -32,11 +32,29 @@ func main() {
 	}
 }
 
-func run(path string) (resultErr error) {
+// commandIO keeps IO ownership local to one invocation. Production defaults
+// remain the operator's file, the real service closer, and net.Listen.
+type commandIO struct {
+	openConfig   func(string) (io.ReadCloser, error)
+	closeService func(*ovdbserver.Service) error
+	listen       func(string, string) (net.Listener, error)
+}
+
+func run(path string) error {
+	return runWithIO(path, commandIO{
+		openConfig: func(path string) (io.ReadCloser, error) {
+			return os.Open(path) // #nosec G304 -- path is the trusted operator-supplied --config filename, never an HTTP/query input.
+		},
+		closeService: (*ovdbserver.Service).Close,
+		listen:       net.Listen,
+	})
+}
+
+func runWithIO(path string, owned commandIO) (resultErr error) {
 	if path == "" {
 		return errors.New("--config is required")
 	}
-	f, err := os.Open(path) // #nosec G304 -- path is the trusted operator-supplied --config filename, never an HTTP/query input.
+	f, err := owned.openConfig(path)
 	if err != nil {
 		return errors.New("configuration is unavailable")
 	}
@@ -72,17 +90,13 @@ func run(path string) (resultErr error) {
 		return err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, service.Close())
+		resultErr = errors.Join(resultErr, owned.closeService(service))
 	}()
-	listener, err := net.Listen("tcp", cfg.Listen)
+	listener, err := owned.listen("tcp", cfg.Listen)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if closeErr := listener.Close(); !errors.Is(closeErr, net.ErrClosed) {
-			resultErr = errors.Join(resultErr, closeErr)
-		}
-	}()
+	// Serve owns and always closes listener; there are no fallible steps before it.
 	httpServer := &http.Server{Handler: service.Handler, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {
 		<-ctx.Done()

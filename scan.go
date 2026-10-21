@@ -39,7 +39,7 @@ func (d *database) scan(ctx context.Context, s source, keep func(map[string]any)
 		return nil, errors.New("dalgo2logs: source is unavailable")
 	}
 	defer func() {
-		if closeErr := f.Close(); closeErr != nil {
+		if closeErr := d.closeSource(f); closeErr != nil {
 			resultErr = errors.Join(resultErr, errors.New("dalgo2logs: source close failed"))
 		}
 	}()

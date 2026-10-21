@@ -117,7 +117,7 @@ func NewDB(cfg Config) (dal.DB, error) {
 	if err != nil {
 		return nil, errors.New("dalgo2logs: allowed root is unavailable")
 	}
-	backend := &database{cfg: cfg, sources: idx, root: openedRoot}
+	backend := &database{cfg: cfg, sources: idx, root: openedRoot, closeSource: (*os.File).Close}
 	return &fileHandle{DB: dal.NewDB(backend), SchemaReader: dbschema.SchemaReader(backend), root: openedRoot}, nil
 }
 
