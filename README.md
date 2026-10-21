@@ -26,6 +26,17 @@ fails if a file changes or rotates during the query. A source reference uses
 the configured database ID, collection, file content hash and byte range;
 references change when content changes.
 
+For a different observed timestamp key, trusted server configuration can set
+`Source.TimestampField: "occurred_at"` on a JSONL source. This selects that exact
+top-level key; it is not a query parameter. Names must match
+`[A-Za-z_][A-Za-z0-9_]{0,127}`. A configured key never falls back to
+`timestamp` or `time`: absent/null values report `missing_timestamp`, while
+empty, non-string or invalid RFC3339Nano values report `invalid_timestamp`.
+Valid values use the existing UTC timestamp field. Raw bytes, original
+`fields_json`, hashes and ranges remain unchanged. An empty mapping preserves
+the legacy `timestamp`-then-`time` behavior, including its existing empty-value
+handling; Text sources reject a nonempty mapping.
+
 ## Google Cloud Logging source
 
 Configure cloudlogging.Config with a fixed ProjectID, collection, result cap,

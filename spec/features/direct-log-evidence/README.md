@@ -29,6 +29,16 @@ current bounded file for each query. The Cloud adapter sends a bounded
 entries.list query for an inclusive time range. Both preserve raw evidence
 and source references, and reject unsupported filters and every mutation.
 
+A trusted JSONL `Source.TimestampField` can select one exact top-level ASCII
+identifier (1–128 characters, `[A-Za-z_][A-Za-z0-9_]{0,127}`) as the observed
+timestamp. Empty configuration preserves legacy `timestamp`/`time` selection.
+Explicit mapping is authoritative: missing/null is `missing_timestamp`;
+present empty, non-string or invalid RFC3339Nano is `invalid_timestamp`, with
+no alternate-field fallback. Valid values normalize to UTC. This configuration
+is not request input and changes neither original fields/raw evidence nor its
+hash/range references, existing schema or OVDB wire fields. Text sources reject
+a nonempty mapping.
+
 A trusted Go process mounts a DALGO driver through OVDB's programmatic
 read-only OpenExternal method. OVDB uses existing discovery, schema, query
 and results endpoints; it has no log parser or log-specific wire field.

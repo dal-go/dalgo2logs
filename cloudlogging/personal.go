@@ -49,7 +49,7 @@ var ErrInvalid = errors.New("cloudlogging: invalid project-local log view")
 func (v LogView) resourceName(expectedProject string) (string, error) {
 	if !projectID.MatchString(v.ProjectID) || v.ProjectID != expectedProject ||
 		!logViewLocation.MatchString(v.Location) ||
-		!(logViewBucket.MatchString(v.Bucket) || v.Bucket == "_Default" || v.Bucket == "_Required") ||
+		(!logViewBucket.MatchString(v.Bucket) && v.Bucket != "_Default" && v.Bucket != "_Required") ||
 		!logViewID.MatchString(v.View) {
 		return "", ErrInvalid
 	}

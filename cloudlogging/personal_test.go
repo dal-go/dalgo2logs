@@ -114,12 +114,20 @@ func TestPersonalDBUsesTrustedCredentialAndFixedView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.(interface{ Close() error }).Close()
+	defer func() {
+		if err := db.(interface{ Close() error }).Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	reader, err := db.ExecuteQueryToRecordsReader(context.Background(), boundedQuery())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	row, err := reader.Next()
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +227,11 @@ func TestPersonalConfiguredPageBudgetStopsEmptyPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.(interface{ Close() error }).Close()
+	defer func() {
+		if err := db.(interface{ Close() error }).Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	_, err = db.ExecuteQueryToRecordsReader(context.Background(), boundedQuery())
 	var limit *LimitError
 	if !errors.Is(err, ErrLimitExceeded) || !errors.As(err, &limit) || limit.Kind != LimitPages || limit.Limit != 3 || requests != 3 {
@@ -334,7 +346,11 @@ func TestPersonalQueryCancellationStopsTokenRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.(interface{ Close() error }).Close()
+	defer func() {
+		if err := db.(interface{ Close() error }).Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() {

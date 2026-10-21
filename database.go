@@ -14,9 +14,10 @@ import (
 
 type database struct {
 	dal.NoConcurrency
-	cfg     Config
-	sources map[string]source
-	root    *os.Root
+	cfg         Config
+	sources     map[string]source
+	root        *os.Root
+	closeSource func(*os.File) error
 }
 
 type fileHandle struct {

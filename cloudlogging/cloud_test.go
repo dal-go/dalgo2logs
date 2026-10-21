@@ -115,7 +115,11 @@ func TestCloudQueryReadsCurrentEntriesWithoutCredentialOrStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	row, err := reader.Next()
 	if err != nil {
 		t.Fatal(err)
@@ -290,7 +294,11 @@ func TestCloudQueryHonorsMappedAliasPrecedenceBeforeLimit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer reader.Close()
+			defer func() {
+				if err := reader.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			row, err := reader.Next()
 			if err != nil {
 				t.Fatal(err)

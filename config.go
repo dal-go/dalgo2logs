@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/dal-go/dalgo/dal"
@@ -24,6 +25,9 @@ type Source struct {
 	Collection string
 	Path       string
 	Format     Format
+	// TimestampField selects one trusted top-level JSONL key. Empty preserves
+	// the legacy timestamp/time selection; explicit values never fall back.
+	TimestampField string
 }
 
 // Config is trusted server-side configuration. Never derive Root or Sources
@@ -42,6 +46,8 @@ type source struct {
 	Source
 	path string
 }
+
+var timestampFieldName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
 func NewDB(cfg Config) (dal.DB, error) {
 	if cfg.ID == "" || cfg.Root == "" || len(cfg.Sources) == 0 {
@@ -85,6 +91,9 @@ func NewDB(cfg Config) (dal.DB, error) {
 		if s.Collection == "" || strings.ContainsAny(s.Collection, "/\\. ") || !filepath.IsLocal(s.Path) || s.Path != filepath.Clean(s.Path) || (s.Format != JSONL && s.Format != Text) {
 			return nil, errors.New("dalgo2logs: invalid source configuration")
 		}
+		if s.TimestampField != "" && (s.Format != JSONL || !timestampFieldName.MatchString(s.TimestampField)) {
+			return nil, errors.New("dalgo2logs: timestamp field requires JSONL and a top-level ASCII identifier of at most 128 characters")
+		}
 		if _, exists := idx[s.Collection]; exists {
 			return nil, errors.New("dalgo2logs: duplicate collection")
 		}
@@ -108,7 +117,7 @@ func NewDB(cfg Config) (dal.DB, error) {
 	if err != nil {
 		return nil, errors.New("dalgo2logs: allowed root is unavailable")
 	}
-	backend := &database{cfg: cfg, sources: idx, root: openedRoot}
+	backend := &database{cfg: cfg, sources: idx, root: openedRoot, closeSource: (*os.File).Close}
 	return &fileHandle{DB: dal.NewDB(backend), SchemaReader: dbschema.SchemaReader(backend), root: openedRoot}, nil
 }
 
