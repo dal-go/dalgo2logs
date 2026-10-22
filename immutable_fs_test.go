@@ -118,6 +118,7 @@ type faultFS struct {
 	statFailure                int
 	cancel                     context.CancelFunc
 	closes                     int
+	cancelOnClose              context.CancelFunc
 }
 
 func (f *faultFS) Open(name string) (fs.File, error) {
@@ -156,6 +157,9 @@ func (f *faultFile) Stat() (fs.FileInfo, error) {
 func (f *faultFile) Close() error {
 	f.owner.closes++
 	err := f.File.Close()
+	if f.owner.cancelOnClose != nil {
+		f.owner.cancelOnClose()
+	}
 	if f.owner.closeErr {
 		return errors.Join(err, errors.New("private close failure"))
 	}
@@ -260,5 +264,45 @@ func TestImmutableFSTextUsesExistingParser(t *testing.T) {
 	data := got[0].Data().(map[string]any)
 	if data["raw"] != content || data["line_start"] != 1 || data["line_end"] != 2 || data["parser"] != "timestamped-text" || data["parse_status"] != "parsed" || !strings.Contains(data["message"].(string), "original stack detail") {
 		t.Fatalf("existing text parser changed: %#v", data)
+	}
+}
+
+func TestImmutableFSCloseCancellationNeverGrantsEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, content                           string
+		filtered, closeFailure, eofCancellation bool
+	}{
+		{name: "observed", content: "{}\n"},
+		{name: "empty EOF", content: ""},
+		{name: "EOF cancels", content: "", eofCancellation: true},
+		{name: "filtered empty", content: "{}\n", filtered: true},
+		{name: "close error and cancellation", content: "{}\n", closeFailure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := &faultFS{FS: fstest.MapFS{"logs/shipping.jsonl": {Data: []byte(tc.content)}}}
+			db := immutableFixture(t, immutableConfig(), files)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.eofCancellation {
+				files.cancel = cancel
+			} else {
+				files.cancelOnClose = cancel
+			}
+			files.closeErr = tc.closeFailure
+			q := query()
+			if tc.filtered {
+				q = query(dal.WhereField("order_id", dal.Equal, "absent"))
+			}
+			reader, err := db.ExecuteQueryToRecordsReader(ctx, q)
+			if reader != nil || !errors.Is(err, context.Canceled) {
+				t.Fatalf("close canceled but evidence granted: reader=%v err=%v context=%v", reader, err, ctx.Err())
+			}
+			if tc.closeFailure && !strings.Contains(err.Error(), "source close failed") {
+				t.Fatalf("cancellation masked close failure: %v", err)
+			}
+			if files.closes != 2 {
+				t.Fatalf("source was not closed exactly once after validation: %d", files.closes)
+			}
+		})
 	}
 }

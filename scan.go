@@ -61,6 +61,11 @@ func (d *database) scan(ctx context.Context, s source, keep func(map[string]any)
 		if closeErr != nil {
 			resultErr = errors.Join(resultErr, errors.New("dalgo2logs: source close failed"))
 		}
+		// Closing or the final EOF may cancel even when no rows are retained.
+		// Admission must observe that cancellation without masking read/close errors.
+		if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(resultErr, ctxErr) {
+			resultErr = errors.Join(resultErr, ctxErr)
+		}
 	}()
 	before, err := f.Stat()
 	if err != nil || before == nil || !before.Mode().IsRegular() || before.Size() < 0 || before.Size() > d.cfg.MaxFileBytes {
