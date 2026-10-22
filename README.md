@@ -37,6 +37,24 @@ Valid values use the existing UTC timestamp field. Raw bytes, original
 the legacy `timestamp`-then-`time` behavior, including its existing empty-value
 handling; Text sources reject a nonempty mapping.
 
+## Trusted immutable file source
+
+`NewDBFromImmutableFS(cfg Config, files fs.FS)` uses the same scanner, parsers,
+limits, raw bytes and digest/span references as `NewDB`. Set `cfg.Root` empty
+and configure each `Source.Path` as a valid local slash-separated relative path
+inside the supplied filesystem. Only configured regular files are admitted.
+For example, pass an owned `embed.FS` with a JSONL source and
+`TimestampField: "occurred_at"`; no temporary disk copy or log database is used.
+
+This constructor is server composition, never request-provided filesystem/path
+routing. The caller guarantees immutable owned contents and no symlink or
+external redirection: `fs.FS` itself does not guarantee either. The reader checks
+bounded regular-file metadata and read consistency, but cannot apply OS inode
+identity/rotation guarantees to generic filesystems. Existing `NewDB` retains
+its OS-root symlink and rotation guards. All opened files are closed, and open,
+stat, read, close or cancellation failures grant no evidence reader. Closing the
+DB prevents subsequent reads but does not close the borrowed filesystem.
+
 ## Google Cloud Logging source
 
 Configure cloudlogging.Config with a fixed ProjectID, collection, result cap,

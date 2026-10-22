@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"regexp"
 	"strings"
@@ -31,20 +32,38 @@ var textHead = regexp.MustCompile(`^(\S+)\s+(TRACE|DEBUG|INFO|WARN|WARNING|ERROR
 var kvToken = regexp.MustCompile(`(?:^|\s)(correlation_id|trace_id|order_id)=([^\s]+)`)
 
 func (d *database) scan(ctx context.Context, s source, keep func(map[string]any) bool, postReferenceFilter bool) (_ []row, resultErr error) {
-	if err := noSymlink(s.path); err != nil {
-		return nil, errors.New("dalgo2logs: source path is no longer allowed")
+	var f fs.File
+	var err error
+	if d.immutableFS != nil {
+		if d.closed.Load() {
+			return nil, errors.New("dalgo2logs: source is unavailable")
+		}
+		if err := checkImmutableLinks(d.immutableFS, s.Path); err != nil {
+			return nil, err
+		}
+		f, err = d.immutableFS.Open(s.Path)
+	} else {
+		if err := noSymlink(s.path); err != nil {
+			return nil, errors.New("dalgo2logs: source path is no longer allowed")
+		}
+		f, err = d.root.Open(s.Path)
 	}
-	f, err := d.root.Open(s.Path)
 	if err != nil {
 		return nil, errors.New("dalgo2logs: source is unavailable")
 	}
 	defer func() {
-		if closeErr := d.closeSource(f); closeErr != nil {
+		var closeErr error
+		if d.immutableFS != nil {
+			closeErr = f.Close()
+		} else {
+			closeErr = d.closeSource(f.(*os.File))
+		}
+		if closeErr != nil {
 			resultErr = errors.Join(resultErr, errors.New("dalgo2logs: source close failed"))
 		}
 	}()
 	before, err := f.Stat()
-	if err != nil || !before.Mode().IsRegular() || before.Size() > d.cfg.MaxFileBytes {
+	if err != nil || before == nil || !before.Mode().IsRegular() || before.Size() < 0 || before.Size() > d.cfg.MaxFileBytes {
 		return nil, errors.New("dalgo2logs: source is not a bounded regular file")
 	}
 	reader := bufio.NewReaderSize(f, d.cfg.MaxLineBytes+1)
@@ -122,17 +141,27 @@ func (d *database) scan(ctx context.Context, s source, keep func(map[string]any)
 	if err := finish(); err != nil {
 		return nil, err
 	}
-	after, err := f.Stat()
-	if err != nil || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
-		return nil, errors.New("dalgo2logs: source changed during scan")
+	if d.immutableFS != nil {
+		after, err := f.Stat()
+		// Generic FS has no os.SameFile identity guarantee. These are consistency
+		// checks, not proof of immutability; that is the trusted constructor contract.
+		if err != nil || after == nil || !after.Mode().IsRegular() || before.Size() != after.Size() || offset != before.Size() || !before.ModTime().Equal(after.ModTime()) {
+			return nil, errors.New("dalgo2logs: immutable source changed during scan")
+		}
+	} else {
+		after, err := f.Stat()
+		if err != nil || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+			return nil, errors.New("dalgo2logs: source changed during scan")
+		}
+		if err := noSymlink(s.path); err != nil {
+			return nil, errors.New("dalgo2logs: source path changed during scan")
+		}
+		pathInfo, err := os.Stat(s.path)
+		if err != nil || !os.SameFile(before, pathInfo) {
+			return nil, errors.New("dalgo2logs: source rotated during scan")
+		}
 	}
-	if err := noSymlink(s.path); err != nil {
-		return nil, errors.New("dalgo2logs: source path changed during scan")
-	}
-	pathInfo, err := os.Stat(s.path)
-	if err != nil || !os.SameFile(before, pathInfo) {
-		return nil, errors.New("dalgo2logs: source rotated during scan")
-	}
+
 	digest := hex.EncodeToString(h.Sum(nil))
 	rows := make([]row, 0, len(entries))
 	for _, e := range entries {

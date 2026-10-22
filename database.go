@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"sync/atomic"
 
 	"github.com/dal-go/dalgo/dal"
 	"github.com/dal-go/dalgo/dbschema"
@@ -18,15 +20,24 @@ type database struct {
 	sources     map[string]source
 	root        *os.Root
 	closeSource func(*os.File) error
+	immutableFS fs.FS
+	closed      atomic.Bool
 }
 
 type fileHandle struct {
 	dal.DB
 	dbschema.SchemaReader
-	root *os.Root
+	root      *os.Root
+	immutable *database
 }
 
-func (h *fileHandle) Close() error { return h.root.Close() }
+func (h *fileHandle) Close() error {
+	if h.root != nil {
+		return h.root.Close()
+	}
+	h.immutable.closed.Store(true)
+	return nil
+}
 
 var _ dal.Backend = (*database)(nil)
 
