@@ -3,7 +3,7 @@ module github.com/dal-go/dalgo2logs
 go 1.26.1
 
 require (
-	cloud.google.com/go/auth v0.22.0
+	cloud.google.com/go/auth v0.24.1
 	cloud.google.com/go/logging v1.20.0
 	github.com/dal-go/dalgo v0.93.0
 	github.com/dal-go/record v0.1.5
@@ -62,7 +62,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.20 // indirect
-	github.com/googleapis/gax-go/v2 v2.23.0 // indirect
+	github.com/googleapis/gax-go/v2 v2.26.2 // indirect
 	github.com/mschoch/smat v0.2.0 // indirect
 	github.com/openvaultdb/openvaultdb-go v0.25.8-0.20261019044937-64e07ec41c4b
 	github.com/strongo/random v0.0.3 // indirect
