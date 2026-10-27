@@ -58,6 +58,8 @@ github.com/dal-go/dalgo2sqlite v0.2.3 h1:iev3CYdLE5F+ejnIdv9SZZmzSaaCj70E3ulrIJM
 github.com/dal-go/dalgo2sqlite v0.2.3/go.mod h1:P9k6p7FcAUVKfrrCs7y8YQRead/B5zTe8q9nFoXQPZ0=
 github.com/dal-go/record v0.1.4 h1:21IJNlUASNw9TytcB5V5a2jHQKa1pycr//dGvj8zNH8=
 github.com/dal-go/record v0.1.4/go.mod h1:PuoOCH74/Vf+pIVWSdrMg7OdUmlSlPgj68yJ+gM42To=
+github.com/dal-go/record v0.1.5 h1:lkPxiJA7S2oE5tA0WUayezd+lmaiEekrEcGz/HRhzLg=
+github.com/dal-go/record v0.1.5/go.mod h1:PuoOCH74/Vf+pIVWSdrMg7OdUmlSlPgj68yJ+gM42To=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
