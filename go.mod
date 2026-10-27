@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	cloud.google.com/go/auth v0.24.1
-	cloud.google.com/go/logging v1.20.0
+	cloud.google.com/go/logging v1.21.0
 	github.com/dal-go/dalgo v0.93.0
 	github.com/dal-go/record v0.1.5
 	google.golang.org/api v0.292.0
