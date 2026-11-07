@@ -5,7 +5,7 @@ go 1.26.1
 require (
 	cloud.google.com/go/auth v0.24.1
 	cloud.google.com/go/logging v1.21.0
-	github.com/dal-go/dalgo v0.95.4
+	github.com/dal-go/dalgo v0.101.4
 	github.com/dal-go/record v0.1.5
 	google.golang.org/api v0.309.0
 )
@@ -56,7 +56,7 @@ require (
 	github.com/RoaringBitmap/roaring/v2 v2.30.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.6 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/dal-go/dalgo2openvaultdb v0.4.7
+	github.com/dal-go/dalgo2openvaultdb v0.4.9
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

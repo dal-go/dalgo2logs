@@ -46,6 +46,8 @@ github.com/cockroachdb/cockroach-go/v2 v2.2.0 h1:/5znzg5n373N/3ESjHF5SMLxiW4RKB0
 github.com/cockroachdb/cockroach-go/v2 v2.2.0/go.mod h1:u3MiKYGupPPjkn3ozknpMUpxPaNLTFWAya419/zv6eI=
 github.com/dal-go/dalgo v0.95.4 h1:AjfaI7S/dreCfmZL8ybcahBlm8l8XVuJ25ZVLorfxxs=
 github.com/dal-go/dalgo v0.95.4/go.mod h1:UCGV7G50rWbXamWXbmbBGmHiACWtNYUFNIL+qM5AAs8=
+github.com/dal-go/dalgo v0.101.4 h1:ivdMAwxoMSROWAGATylTJvCEdBQpgRgUfio44la+Ffs=
+github.com/dal-go/dalgo v0.101.4/go.mod h1:UCGV7G50rWbXamWXbmbBGmHiACWtNYUFNIL+qM5AAs8=
 github.com/dal-go/dalgo2firestore v0.10.3 h1:AQSFCh0T+mao61lg2flJYqgbU/lpWIQ6bUYr89Drf04=
 github.com/dal-go/dalgo2firestore v0.10.3/go.mod h1:qWHAAOz9AVKdseFVQaaaoIUtzZFxFnQnzMUqaPTavTA=
 github.com/dal-go/dalgo2http v0.4.0 h1:vtkwd8x88kP4XLEZCt7kTFa5xJfQojJWJRKBHGEBg0k=
@@ -56,6 +58,8 @@ github.com/dal-go/dalgo2openvaultdb v0.3.3 h1:mY2SZvIiDy6Fl/ay49ewrl1qpawVmtvK/F
 github.com/dal-go/dalgo2openvaultdb v0.3.3/go.mod h1:k6tjqcjBckCHFuYfN0sh76cd3kvf6KCW7UcUz1sOTEE=
 github.com/dal-go/dalgo2openvaultdb v0.4.7 h1:/mU7bWCO/LVf4r/SOyqnh/4ht9pq0N8sN8s/W14oCI0=
 github.com/dal-go/dalgo2openvaultdb v0.4.7/go.mod h1:t8bkvYFSblPnHJ+WlIsT0uWb/wdkL2JZE2KMJgVbM8g=
+github.com/dal-go/dalgo2openvaultdb v0.4.9 h1:/rKfmjp/H7bCxfUFhXQ9TAXU+FEWtCvZUtyjeW1f4h8=
+github.com/dal-go/dalgo2openvaultdb v0.4.9/go.mod h1:bvxp05tJfn76z/0flHaHpsvLJl7aUI4MYNxuDqbeFYs=
 github.com/dal-go/dalgo2postgres v0.9.4 h1:WMki+YsCbzwnl4mCU70Og3DzQWJfqzlCPZVf2beypVI=
 github.com/dal-go/dalgo2postgres v0.9.4/go.mod h1:Z9tl9l/M/A90UrKKuEWnCzOoP3U66oV7dQkUJ4A6A+Q=
 github.com/dal-go/dalgo2sql v0.29.7 h1:IPTLI3TP/WY9ldusfgIGNP7Zcmwle1Y9dDaA/7+e6A8=
